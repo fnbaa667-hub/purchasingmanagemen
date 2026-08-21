@@ -73,6 +73,19 @@ let state = {
   supplierList: [],
   keranjang: [],       // draft item permintaan sebelum submit
   tiketList: [],
+  notaList: [],
+  permintaanTerbuka: [],
+  notaKeranjang: [],
+  notaSupplierId: null,
+  notaSupplierSearch: "",
+  terimaList: [],
+  saldoKas: 0,
+  notaBelumDiajukan: [],
+  notaDiajukan: [],
+  notaDisetujui: [],
+  pengajuanTransferMenunggu: [],
+  topupPilih: [],
+  transferPilih: [],
   loading: false,
   error: ""
 };
@@ -122,6 +135,10 @@ async function login(username, password){
   await loadMasterData();
   state.view = "permintaan";
   await loadTiketList();
+  await loadPermintaanTerbuka();
+  await loadNotaList();
+  await loadTerimaList();
+  await loadKasData();
   render();
 }
 async function loadProfile(){
@@ -167,6 +184,53 @@ async function tambahSupplier(nama, kontak){
   if(!nama.trim()) return;
   await sb.from("supplier").insert({ nama_supplier: nama.trim(), kontak: kontak.trim() || null, created_by: state.profile.id });
   await loadMasterData(); render();
+}
+
+/* ================= NOTA & PENERIMAAN: LOADER ================= */
+async function loadNotaList(){
+  const { data } = await sb.from("tiket_nota")
+    .select("*, supplier(nama_supplier), profiles(nama), nota_item(*, jenis_barang(nama_barang, satuan))")
+    .order("created_at", { ascending: false }).limit(30);
+  state.notaList = data || [];
+}
+async function loadPermintaanTerbuka(){
+  const { data } = await sb.from("permintaan_item")
+    .select("*, jenis_barang(nama_barang, satuan, harga_referensi), tiket_permintaan(no_tiket, requester_id, profiles(nama))")
+    .in("status", ["pending","sebagian"]).eq("is_void", false)
+    .order("created_at", { ascending: true });
+  state.permintaanTerbuka = data || [];
+}
+async function loadTerimaList(){
+  const { data } = await sb.from("nota_item")
+    .select("*, jenis_barang(nama_barang, satuan), tiket_nota(no_nota, supplier(nama_supplier)), permintaan_item(jenis_barang_id, tiket_permintaan(requester_id))")
+    .eq("status_penerimaan", "menunggu");
+  state.terimaList = (data || []).filter(ni => ni.permintaan_item?.tiket_permintaan?.requester_id === state.profile.id);
+}
+
+async function loadKasData(){
+  const { data: ledger } = await sb.from("kas_ledger").select("saldo_berjalan").order("created_at", { ascending:false }).limit(1);
+  state.saldoKas = (ledger && ledger.length) ? Number(ledger[0].saldo_berjalan) : 0;
+
+  const { data: belum } = await sb.from("tiket_nota").select("*, supplier(nama_supplier)")
+    .eq("status_kas","belum_diajukan").eq("is_void", false).order("created_at");
+  state.notaBelumDiajukan = belum || [];
+
+  const { data: diajukan } = await sb.from("tiket_nota").select("*, supplier(nama_supplier)")
+    .eq("status_kas","diajukan").order("created_at");
+  state.notaDiajukan = diajukan || [];
+
+  const { data: disetujui } = await sb.from("tiket_nota").select("*, supplier(nama_supplier)")
+    .eq("status_kas","disetujui").order("created_at");
+  state.notaDisetujui = disetujui || [];
+
+  const { data: transferMenunggu } = await sb.from("pengajuan_transfer").select("*").eq("status","menunggu").order("created_at");
+  for(const pt of (transferMenunggu || [])){
+    const { data: notanya } = await sb.from("tiket_nota")
+      .select("no_nota, tanggal_belanja, total_nominal, supplier(nama_supplier)")
+      .eq("pengajuan_transfer_id", pt.id);
+    pt._notaList = notanya || [];
+  }
+  state.pengajuanTransferMenunggu = transferMenunggu || [];
 }
 
 /* ================= PERMINTAAN BARANG ================= */
@@ -217,6 +281,217 @@ function searchJenisBarang(keyword){
   return state.jenisList.filter(j => j.nama_barang.toLowerCase().includes(kw)).slice(0, 8);
 }
 
+/* ================= NOTA: KERANJANG & AKSI ================= */
+function tambahKeNotaKeranjang(pi){
+  if(state.notaKeranjang.some(it => it.permintaan_item_id === pi.id)) return;
+  state.notaKeranjang.push({
+    permintaan_item_id: pi.id,
+    jenis_barang_id_asli: pi.jenis_barang_id,
+    jenis_barang_id: pi.jenis_barang_id,
+    nama_barang: pi.jenis_barang.nama_barang,
+    satuan: pi.jenis_barang.satuan,
+    jumlah: Math.max(1, (pi.jumlah_diminta - pi.jumlah_terpenuhi)),
+    harga: pi.jenis_barang.harga_referensi || 0,
+    is_substitusi: false
+  });
+  render();
+}
+function hapusDariNotaKeranjang(idx){ state.notaKeranjang.splice(idx,1); render(); }
+function ubahQtyNotaKeranjang(idx, delta){
+  state.notaKeranjang[idx].jumlah = Math.max(1, state.notaKeranjang[idx].jumlah + delta);
+  render();
+}
+function ubahHargaNotaKeranjang(idx, val){
+  state.notaKeranjang[idx].harga = Number(val) || 0;
+}
+
+function openGantiBarangModal(idx){
+  openModal(`
+    <p style="font-weight:600;margin:0 0 12px">Ganti barang yang dibeli</p>
+    <input id="gbSearch" placeholder="Cari barang pengganti...">
+    <div id="gbResults" class="sugglist" style="margin-top:8px"></div>
+  `, (overlay) => {
+    const inp = overlay.querySelector("#gbSearch");
+    const box = overlay.querySelector("#gbResults");
+    function refresh(){
+      const res = searchJenisBarang(inp.value);
+      box.innerHTML = res.map(r => `<div class="suggitem" data-id="${r.id}">${r.nama_barang} <span class="muted">· ${r.satuan}</span></div>`).join("");
+      box.querySelectorAll(".suggitem").forEach(el => {
+        el.onclick = () => {
+          const item = state.jenisList.find(j => j.id === el.dataset.id);
+          const line = state.notaKeranjang[idx];
+          line.jenis_barang_id = item.id;
+          line.nama_barang = item.nama_barang;
+          line.satuan = item.satuan;
+          line.is_substitusi = (item.id !== line.jenis_barang_id_asli);
+          overlay.remove();
+          render();
+        };
+      });
+    }
+    inp.oninput = refresh;
+    inp.focus();
+  });
+}
+
+function pilihSupplierNota(sup){
+  state.notaSupplierId = sup.id;
+  state.notaSupplierSearch = sup.nama_supplier;
+  render();
+}
+
+async function submitNota(){
+  if(!state.notaSupplierId){ alert("Pilih supplier dulu."); return; }
+  if(state.notaKeranjang.length === 0){ alert("Tambahkan minimal 1 barang dulu."); return; }
+  const no_nota = await generateNoTiket("TN", "tiket_nota");
+  const totalNominal = state.notaKeranjang.reduce((s, it) => s + it.jumlah * it.harga, 0);
+  const { data: nota, error } = await sb.from("tiket_nota").insert({
+    no_nota, purchasing_id: state.profile.id, supplier_id: state.notaSupplierId,
+    tanggal_belanja: new Date().toISOString().slice(0,10), total_nominal: totalNominal
+  }).select().single();
+  if(error){ alert("Gagal membuat nota: " + error.message); return; }
+
+  const { data: ledgerTerakhir } = await sb.from("kas_ledger").select("saldo_berjalan").order("created_at",{ascending:false}).limit(1);
+  const saldoLama = (ledgerTerakhir && ledgerTerakhir.length) ? Number(ledgerTerakhir[0].saldo_berjalan) : 0;
+  await sb.from("kas_ledger").insert({
+    jenis:"keluar", jumlah: totalNominal, saldo_berjalan: saldoLama - totalNominal,
+    ref_tabel: "tiket_nota", ref_id: nota.id, keterangan: "Belanja nota " + no_nota
+  });
+
+  for(const it of state.notaKeranjang){
+    const { error: eItem } = await sb.from("nota_item").insert({
+      tiket_nota_id: nota.id, permintaan_item_id: it.permintaan_item_id,
+      jenis_barang_id: it.jenis_barang_id, is_substitusi: it.is_substitusi,
+      jumlah_dibeli: it.jumlah, harga_satuan: it.harga
+    });
+    if(eItem){ alert("Gagal simpan baris nota: " + eItem.message); continue; }
+
+    const { data: pi } = await sb.from("permintaan_item").select("*").eq("id", it.permintaan_item_id).single();
+    if(pi){
+      const terpenuhiBaru = Number(pi.jumlah_terpenuhi) + Number(it.jumlah);
+      const statusBaru = terpenuhiBaru >= pi.jumlah_diminta ? "selesai" : "sebagian";
+      await sb.from("permintaan_item").update({ jumlah_terpenuhi: terpenuhiBaru, status: statusBaru }).eq("id", pi.id);
+    }
+  }
+  state.notaKeranjang = []; state.notaSupplierId = null; state.notaSupplierSearch = "";
+  await loadPermintaanTerbuka(); await loadNotaList(); await loadTiketList();
+  alert("Nota " + no_nota + " berhasil disimpan.");
+  render();
+}
+
+async function terimaBarangItem(notaItemId){
+  await sb.from("nota_item").update({
+    status_penerimaan: "diterima", diterima_oleh: state.profile.id, diterima_at: new Date().toISOString()
+  }).eq("id", notaItemId);
+  await loadTerimaList();
+  render();
+}
+
+async function tandaiHilang(permintaanItemId){
+  if(!confirm("Tandai permintaan ini hilang? Requester harus mengajukan ulang secara manual.")) return;
+  await sb.from("permintaan_item").update({ status: "hilang" }).eq("id", permintaanItemId);
+  await loadPermintaanTerbuka(); await loadTiketList();
+  render();
+}
+
+/* ================= KAS: AKSI ================= */
+function toggleTopupPilih(id){
+  const idx = state.topupPilih.indexOf(id);
+  if(idx > -1) state.topupPilih.splice(idx,1); else state.topupPilih.push(id);
+  render();
+}
+async function submitTopup(){
+  if(state.topupPilih.length === 0){ alert("Pilih minimal 1 nota."); return; }
+  const no_pengajuan = await generateNoTiket("PTU", "pengajuan_topup");
+  const { data: pengajuan, error } = await sb.from("pengajuan_topup")
+    .insert({ no_pengajuan, purchasing_id: state.profile.id }).select().single();
+  if(error){ alert("Gagal membuat pengajuan: " + error.message); return; }
+  await sb.from("tiket_nota").update({ status_kas: "diajukan", pengajuan_topup_id: pengajuan.id }).in("id", state.topupPilih);
+  state.topupPilih = [];
+  await loadKasData();
+  alert("Pengajuan top-up " + no_pengajuan + " dibuat.");
+  render();
+}
+async function approveNota(notaId){
+  await sb.from("tiket_nota").update({
+    status_kas: "disetujui", approved_by: state.profile.id, approved_at: new Date().toISOString()
+  }).eq("id", notaId);
+  await loadKasData(); render();
+}
+async function rejectNota(notaId){
+  if(!confirm("Tolak nota ini? Nota kembali ke status belum diajukan dan bisa diajukan ulang.")) return;
+  await sb.from("tiket_nota").update({ status_kas: "belum_diajukan", pengajuan_topup_id: null }).eq("id", notaId);
+  await loadKasData(); render();
+}
+function toggleTransferPilih(id){
+  const idx = state.transferPilih.indexOf(id);
+  if(idx > -1) state.transferPilih.splice(idx,1); else state.transferPilih.push(id);
+  render();
+}
+async function submitPengajuanTransfer(){
+  if(state.transferPilih.length === 0){ alert("Pilih minimal 1 nota."); return; }
+  const total = state.notaDisetujui.filter(n => state.transferPilih.includes(n.id))
+    .reduce((s,n) => s + Number(n.total_nominal), 0);
+  const no_pengajuan_transfer = await generateNoTiket("PX", "pengajuan_transfer");
+  const { data: pengajuan, error } = await sb.from("pengajuan_transfer")
+    .insert({ no_pengajuan_transfer, accounting_id: state.profile.id, total_nominal: total }).select().single();
+  if(error){ alert("Gagal membuat pengajuan: " + error.message); return; }
+  await sb.from("tiket_nota").update({
+    status_kas: "termasuk_pengajuan_transfer", pengajuan_transfer_id: pengajuan.id
+  }).in("id", state.transferPilih);
+  state.transferPilih = [];
+  await loadKasData();
+  alert("Pengajuan transfer " + no_pengajuan_transfer + " dibuat.");
+  render();
+}
+async function keputusanTransfer(pengajuanId, keputusan){
+  const pengajuan = state.pengajuanTransferMenunggu.find(p => p.id === pengajuanId);
+  if(keputusan === "sudah_transfer"){
+    const { data: ledgerTerakhir } = await sb.from("kas_ledger").select("saldo_berjalan").order("created_at",{ascending:false}).limit(1);
+    const saldoLama = (ledgerTerakhir && ledgerTerakhir.length) ? Number(ledgerTerakhir[0].saldo_berjalan) : 0;
+    await sb.from("kas_ledger").insert({
+      jenis: "masuk", jumlah: pengajuan.total_nominal, saldo_berjalan: saldoLama + Number(pengajuan.total_nominal),
+      ref_tabel: "pengajuan_transfer", ref_id: pengajuanId, keterangan: "Transfer dari Owner " + pengajuan.no_pengajuan_transfer
+    });
+    await sb.from("pengajuan_transfer").update({
+      status: "sudah_transfer", keputusan_oleh: state.profile.id, keputusan_at: new Date().toISOString()
+    }).eq("id", pengajuanId);
+    await sb.from("tiket_nota").update({ status_kas: "selesai" }).eq("pengajuan_transfer_id", pengajuanId);
+  } else {
+    await sb.from("pengajuan_transfer").update({
+      status: "tunda", keputusan_oleh: state.profile.id, keputusan_at: new Date().toISOString()
+    }).eq("id", pengajuanId);
+  }
+  await loadKasData();
+  render();
+}
+function copyWAFormat(pengajuan){
+  let text = "Pengajuan Transfer Kas - " + pengajuan.no_pengajuan_transfer + "\n";
+  (pengajuan._notaList || []).forEach(n => {
+    text += n.tanggal_belanja + " - " + (n.supplier?.nama_supplier || "") + " - " + fmtRupiah(n.total_nominal) + "\n";
+  });
+  text += "Total: " + fmtRupiah(pengajuan.total_nominal) + "\nMohon transfer ke kas purchasing.";
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(
+      () => alert("Format WA disalin ke clipboard."),
+      () => prompt("Salin manual teks berikut:", text)
+    );
+  } else {
+    prompt("Salin manual teks berikut:", text);
+  }
+}
+function printPengajuan(pengajuan){
+  const w = window.open("", "_blank");
+  if(!w) { alert("Popup diblokir browser, izinkan popup untuk mencetak."); return; }
+  const rows = (pengajuan._notaList || []).map(n =>
+    n.tanggal_belanja + " - " + (n.supplier?.nama_supplier || "") + " - " + fmtRupiah(n.total_nominal)
+  ).join("\n");
+  w.document.write("<pre style=\"font-family:sans-serif;font-size:14px;white-space:pre-wrap\">Pengajuan Transfer Kas - " +
+    pengajuan.no_pengajuan_transfer + "\n\n" + rows + "\n\nTotal: " + fmtRupiah(pengajuan.total_nominal) + "</pre>");
+  w.document.close();
+  w.print();
+}
+
 /* ================= RENDER: LOGIN ================= */
 function renderLogin(){
   app.innerHTML = `
@@ -246,6 +521,8 @@ function renderShell(content){
   const role = state.profile.role;
   const navItems = [
     { id:"permintaan", label:"Permintaan" },
+    { id:"nota", label:"Nota" },
+    ...(role !== "user" ? [{ id:"kas", label:"Kas" }] : []),
     { id:"master", label:"Master data" },
   ];
   app.innerHTML = `
@@ -287,7 +564,23 @@ function renderShell(content){
 function renderPermintaan(){
   const searchVal = window.__searchVal || "";
   const results = searchJenisBarang(searchVal);
+  const terimaHtml = state.terimaList.length ? `
+    <div class="card">
+      <p style="font-weight:600;margin:0 0 12px">Perlu saya terima</p>
+      ${state.terimaList.map(ni => `
+        <div style="border-bottom:0.5px solid var(--border);padding:10px 0">
+          <div class="between">
+            <span style="font-size:14px">${ni.jenis_barang?.nama_barang} · ${ni.jumlah_dibeli} ${ni.jenis_barang?.satuan}</span>
+            <button style="padding:6px 10px;font-size:12px" data-terima="${ni.id}">Terima</button>
+          </div>
+          <span class="muted" style="font-size:12px">Nota ${ni.tiket_nota?.no_nota} · ${ni.tiket_nota?.supplier?.nama_supplier}</span>
+          ${ni.is_substitusi ? `<div class="badge badge-pending" style="margin-top:6px">Barang pengganti dari yang diminta</div>` : ""}
+        </div>
+      `).join("")}
+    </div>` : "";
+
   const html = `
+    ${terimaHtml}
     <div class="card">
       <p style="font-weight:600;margin:0 0 4px">Buat permintaan barang</p>
       <p class="muted" style="margin:0 0 12px">Cari dari barang yang sudah ada</p>
@@ -370,6 +663,99 @@ function renderPermintaan(){
   document.querySelectorAll("[data-ganti]").forEach(el => el.onchange = () => ubahGantiKeranjang(Number(el.dataset.ganti), el.checked));
   const btnSubmit = document.getElementById("btnSubmitPermintaan");
   if(btnSubmit) btnSubmit.onclick = submitPermintaan;
+  document.querySelectorAll("[data-terima]").forEach(el => el.onclick = () => terimaBarangItem(el.dataset.terima));
+}
+
+/* ================= RENDER: NOTA ================= */
+function renderNota(){
+  const isPurchasing = state.profile.role === "purchasing";
+  const supKw = state.notaSupplierSearch.trim().toLowerCase();
+  const supResults = (supKw && !state.notaSupplierId) ? state.supplierList.filter(s => s.nama_supplier.toLowerCase().includes(supKw)).slice(0,6) : [];
+
+  const formHtml = isPurchasing ? `
+    <div class="card">
+      <p style="font-weight:600;margin:0 0 12px">Catat nota belanja</p>
+      <label class="field-label">Supplier</label>
+      <input id="supSearch" placeholder="Cari supplier..." value="${state.notaSupplierSearch}">
+      ${supResults.length ? `<div class="sugglist" id="supBox">
+        ${supResults.map(s => `<div class="suggitem" data-id="${s.id}">${s.nama_supplier}</div>`).join("")}
+      </div>` : ""}
+
+      <p style="font-weight:600;margin:16px 0 8px;font-size:14px">Pilih dari permintaan menunggu</p>
+      <div class="sugglist" style="max-height:180px">
+        ${state.permintaanTerbuka.length === 0 ? `<p class="muted" style="padding:10px">Tidak ada permintaan terbuka.</p>` :
+          state.permintaanTerbuka.map(pi => `
+          <div class="between" style="padding:10px 12px;border-bottom:0.5px solid var(--border)">
+            <span data-pilih="${pi.id}" style="cursor:pointer">${pi.jenis_barang?.nama_barang} · sisa ${(pi.jumlah_diminta - pi.jumlah_terpenuhi)} ${pi.jenis_barang?.satuan}
+              <span class="badge badge-${pi.tipe}">${pi.tipe}</span>
+            </span>
+            ${pi.tipe === "wajib" ? `<button style="padding:3px 6px;font-size:11px" data-hilang="${pi.id}">Tandai hilang</button>` : `<span class="muted" style="font-size:11px">${pi.tiket_permintaan?.profiles?.nama || ''}</span>`}
+          </div>
+        `).join("")}
+      </div>
+
+      ${state.notaKeranjang.length ? `
+      <p style="font-weight:600;margin:16px 0 8px;font-size:14px">Barang di nota ini</p>
+      ${state.notaKeranjang.map((it, idx) => `
+        <div style="border-bottom:0.5px solid var(--border);padding:10px 0">
+          <div class="between">
+            <span style="font-size:14px">${it.nama_barang} ${it.is_substitusi ? '<span class="badge badge-pending">pengganti</span>' : ''}</span>
+            <button style="padding:4px 8px;font-size:12px" data-hapusnota="${idx}">Hapus</button>
+          </div>
+          <button style="font-size:12px;margin-top:6px;padding:4px 8px" data-ganti="${idx}">Ganti barang</button>
+          <div class="row" style="margin-top:8px;gap:8px">
+            <div class="stepper" style="flex:1">
+              <button data-qtynota="${idx}" data-delta="-1">−</button>
+              <span>${it.jumlah} ${it.satuan}</span>
+              <button data-qtynota="${idx}" data-delta="1">+</button>
+            </div>
+            <input style="flex:1" data-harga="${idx}" value="${it.harga}" placeholder="Harga satuan">
+          </div>
+        </div>
+      `).join("")}
+      <button class="primary" style="width:100%;margin-top:12px" id="btnSubmitNota">Simpan nota (${state.notaKeranjang.length} barang)</button>
+      ` : ""}
+    </div>` : "";
+
+  const historyHtml = `
+    <div class="card">
+      <p style="font-weight:600;margin:0 0 12px">Riwayat nota</p>
+      ${state.notaList.length === 0 ? `<p class="muted">Belum ada nota.</p>` : state.notaList.map(n => `
+        <div style="border-bottom:0.5px solid var(--border);padding:10px 0">
+          <div class="between">
+            <span style="font-size:13px;font-weight:600">${n.no_nota} · ${n.supplier?.nama_supplier}</span>
+            <span class="badge badge-pending">${n.status_kas.replace(/_/g,' ')}</span>
+          </div>
+          <div class="between" style="margin-top:4px">
+            <span class="muted" style="font-size:12px">${n.tanggal_belanja}</span>
+            <span style="font-size:13px;font-weight:600">${fmtRupiah(n.total_nominal)}</span>
+          </div>
+        </div>
+      `).join("")}
+    </div>`;
+
+  renderShell(formHtml + historyHtml);
+
+  if(isPurchasing){
+    const supInput = document.getElementById("supSearch");
+    if(supInput){
+      supInput.oninput = () => { state.notaSupplierId = null; state.notaSupplierSearch = supInput.value; render(); };
+      if(!state.notaSupplierId){ supInput.focus(); supInput.setSelectionRange(supInput.value.length, supInput.value.length); }
+    }
+    document.querySelectorAll("#supBox .suggitem").forEach(el => {
+      el.onclick = () => pilihSupplierNota(state.supplierList.find(s => s.id === el.dataset.id));
+    });
+    document.querySelectorAll("[data-pilih]").forEach(el => {
+      el.onclick = () => tambahKeNotaKeranjang(state.permintaanTerbuka.find(p => p.id === el.dataset.pilih));
+    });
+    document.querySelectorAll("[data-hilang]").forEach(el => el.onclick = () => tandaiHilang(el.dataset.hilang));
+    document.querySelectorAll("[data-hapusnota]").forEach(el => el.onclick = () => hapusDariNotaKeranjang(Number(el.dataset.hapusnota)));
+    document.querySelectorAll("[data-qtynota]").forEach(el => el.onclick = () => ubahQtyNotaKeranjang(Number(el.dataset.qtynota), Number(el.dataset.delta)));
+    document.querySelectorAll("[data-harga]").forEach(el => el.onchange = () => ubahHargaNotaKeranjang(Number(el.dataset.harga), el.value));
+    document.querySelectorAll("[data-ganti]").forEach(el => el.onclick = () => openGantiBarangModal(Number(el.dataset.ganti)));
+    const btnSubmitNota = document.getElementById("btnSubmitNota");
+    if(btnSubmitNota) btnSubmitNota.onclick = submitNota;
+  }
 }
 
 /* ================= RENDER: MASTER DATA ================= */
@@ -436,10 +822,113 @@ function renderMaster(){
   if(btnS) btnS.onclick = () => tambahSupplier(document.getElementById("mNamaSup").value, document.getElementById("mKontak").value);
 }
 
+/* ================= RENDER: KAS ================= */
+function renderKas(){
+  const role = state.profile.role;
+  let html = "";
+
+  if(role === "purchasing" || role === "owner"){
+    html += `
+    <div class="card">
+      <p style="font-weight:600;margin:0 0 4px">Saldo kas</p>
+      <p style="font-size:24px;font-weight:600;margin:0 0 8px;${state.saldoKas<0?'color:var(--danger)':''}">${fmtRupiah(state.saldoKas)}</p>
+      ${state.saldoKas<0 ? '<p class="muted" style="color:var(--danger)">Saldo minus — purchasing sedang menombok sementara.</p>' : ''}
+    </div>`;
+  }
+
+  if(role === "purchasing"){
+    html += `
+    <div class="card">
+      <p style="font-weight:600;margin:0 0 12px">Ajukan top-up</p>
+      ${state.notaBelumDiajukan.length===0 ? '<p class="muted">Tidak ada nota yang siap diajukan.</p>' :
+        state.notaBelumDiajukan.map(n => `
+        <label class="row" style="padding:8px 0;border-bottom:0.5px solid var(--border)">
+          <input type="checkbox" style="width:auto" data-topup="${n.id}" ${state.topupPilih.includes(n.id)?'checked':''}>
+          <span style="flex:1;font-size:13px">${n.no_nota} · ${n.supplier?.nama_supplier}</span>
+          <span style="font-size:13px;font-weight:600">${fmtRupiah(n.total_nominal)}</span>
+        </label>`).join("")}
+      ${state.notaBelumDiajukan.length ? `<button class="primary" style="width:100%;margin-top:12px" id="btnSubmitTopup">Ajukan top-up (${state.topupPilih.length} nota)</button>` : ""}
+    </div>`;
+  }
+
+  if(["accounting","manager","owner"].includes(role)){
+    html += `
+    <div class="card">
+      <p style="font-weight:600;margin:0 0 12px">Approval top-up (per nota)</p>
+      ${state.notaDiajukan.length===0 ? '<p class="muted">Tidak ada nota menunggu approval.</p>' :
+        state.notaDiajukan.map(n => `
+        <div style="border-bottom:0.5px solid var(--border);padding:10px 0">
+          <div class="between">
+            <span style="font-size:13px">${n.no_nota} · ${n.supplier?.nama_supplier}</span>
+            <span style="font-size:13px;font-weight:600">${fmtRupiah(n.total_nominal)}</span>
+          </div>
+          <div class="row" style="margin-top:8px;gap:8px">
+            <button class="primary" style="flex:1" data-approve="${n.id}">Setujui</button>
+            <button class="danger" style="flex:1" data-reject="${n.id}">Tolak</button>
+          </div>
+        </div>`).join("")}
+    </div>
+
+    <div class="card">
+      <p style="font-weight:600;margin:0 0 12px">Buat pengajuan transfer</p>
+      ${state.notaDisetujui.length===0 ? '<p class="muted">Belum ada nota siap ditransfer.</p>' :
+        state.notaDisetujui.map(n => `
+        <label class="row" style="padding:8px 0;border-bottom:0.5px solid var(--border)">
+          <input type="checkbox" style="width:auto" data-transfer="${n.id}" ${state.transferPilih.includes(n.id)?'checked':''}>
+          <span style="flex:1;font-size:13px">${n.no_nota} · ${n.supplier?.nama_supplier}</span>
+          <span style="font-size:13px;font-weight:600">${fmtRupiah(n.total_nominal)}</span>
+        </label>`).join("")}
+      ${state.notaDisetujui.length ? `<button class="primary" style="width:100%;margin-top:12px" id="btnSubmitTransfer">Buat pengajuan transfer (${state.transferPilih.length} nota)</button>` : ""}
+    </div>`;
+  }
+
+  if(role === "owner"){
+    html += `
+    <div class="card">
+      <p style="font-weight:600;margin:0 0 12px">Pengajuan transfer menunggu keputusan</p>
+      ${state.pengajuanTransferMenunggu.length===0 ? '<p class="muted">Tidak ada pengajuan menunggu.</p>' :
+        state.pengajuanTransferMenunggu.map(p => `
+        <div style="border-bottom:0.5px solid var(--border);padding:12px 0">
+          <p style="font-weight:600;font-size:13px;margin:0 0 6px">${p.no_pengajuan_transfer}</p>
+          ${p._notaList.map(n => `<div class="between"><span class="muted" style="font-size:12px">${n.tanggal_belanja} · ${n.supplier?.nama_supplier}</span><span style="font-size:12px">${fmtRupiah(n.total_nominal)}</span></div>`).join("")}
+          <div class="between" style="margin-top:6px;font-weight:600"><span>Total</span><span>${fmtRupiah(p.total_nominal)}</span></div>
+          <div class="row" style="margin-top:8px;gap:6px">
+            <button style="flex:1;font-size:12px" data-wa="${p.id}">Salin WA</button>
+            <button style="flex:1;font-size:12px" data-print="${p.id}">Cetak</button>
+          </div>
+          <div class="row" style="margin-top:8px;gap:8px">
+            <button class="primary" style="flex:1" data-sudahtransfer="${p.id}">Sudah transfer</button>
+            <button style="flex:1" data-tunda="${p.id}">Tunda</button>
+          </div>
+        </div>`).join("")}
+    </div>`;
+  }
+
+  renderShell(html);
+
+  document.querySelectorAll("[data-topup]").forEach(el => el.onchange = () => toggleTopupPilih(el.dataset.topup));
+  const btnTopup = document.getElementById("btnSubmitTopup");
+  if(btnTopup) btnTopup.onclick = submitTopup;
+
+  document.querySelectorAll("[data-approve]").forEach(el => el.onclick = () => approveNota(el.dataset.approve));
+  document.querySelectorAll("[data-reject]").forEach(el => el.onclick = () => rejectNota(el.dataset.reject));
+
+  document.querySelectorAll("[data-transfer]").forEach(el => el.onchange = () => toggleTransferPilih(el.dataset.transfer));
+  const btnTransfer = document.getElementById("btnSubmitTransfer");
+  if(btnTransfer) btnTransfer.onclick = submitPengajuanTransfer;
+
+  document.querySelectorAll("[data-wa]").forEach(el => el.onclick = () => copyWAFormat(state.pengajuanTransferMenunggu.find(p => p.id === el.dataset.wa)));
+  document.querySelectorAll("[data-print]").forEach(el => el.onclick = () => printPengajuan(state.pengajuanTransferMenunggu.find(p => p.id === el.dataset.print)));
+  document.querySelectorAll("[data-sudahtransfer]").forEach(el => el.onclick = () => keputusanTransfer(el.dataset.sudahtransfer, "sudah_transfer"));
+  document.querySelectorAll("[data-tunda]").forEach(el => el.onclick = () => keputusanTransfer(el.dataset.tunda, "tunda"));
+}
+
 /* ================= MAIN RENDER ================= */
 function render(){
   if(!state.session || !state.profile){ renderLogin(); return; }
   if(state.view === "master") renderMaster();
+  else if(state.view === "nota") renderNota();
+  else if(state.view === "kas") renderKas();
   else renderPermintaan();
 }
 
@@ -451,6 +940,10 @@ function render(){
     await loadProfile();
     await loadMasterData();
     await loadTiketList();
+    await loadPermintaanTerbuka();
+    await loadNotaList();
+    await loadTerimaList();
+    await loadKasData();
   }
   render();
 })();
