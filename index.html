@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Kas & Purchasing - Arcelio Group</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root{
+    --bg:#f5f5f4; --card:#ffffff; --border:#e5e5e4; --border-strong:#d4d4d3;
+    --text:#292826; --text-sec:#6b6a67; --text-muted:#a3a29e;
+    --accent:#1d6fa5; --accent-bg:#e6f1fb;
+    --danger:#c0392b; --danger-bg:#fdecea;
+    --success:#1d8a5f; --success-bg:#e6f6ef;
+    --warning:#a5680f; --warning-bg:#fdf2df;
+    --radius:10px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);font-size:15px}
+  #app{max-width:480px;margin:0 auto;min-height:100vh;background:var(--bg);padding-bottom:70px}
+  input,select,textarea{font-family:inherit;font-size:15px;padding:10px 12px;border:0.5px solid var(--border-strong);border-radius:var(--radius);width:100%;background:#fff;color:var(--text)}
+  button{font-family:inherit;font-size:14px;padding:10px 14px;border-radius:var(--radius);border:0.5px solid var(--border-strong);background:#fff;color:var(--text);cursor:pointer}
+  button.primary{background:var(--accent);color:#fff;border:none;font-weight:600}
+  button.danger{background:var(--danger);color:#fff;border:none}
+  button:active{transform:scale(0.98)}
+  .card{background:var(--card);border:0.5px solid var(--border);border-radius:12px;padding:16px;margin:12px}
+  .row{display:flex;gap:8px;align-items:center}
+  .between{display:flex;justify-content:space-between;align-items:center}
+  .muted{color:var(--text-sec);font-size:13px}
+  .badge{display:inline-block;font-size:11px;padding:3px 8px;border-radius:6px;font-weight:600}
+  .badge-wajib{background:var(--danger-bg);color:var(--danger)}
+  .badge-biasa{background:var(--accent-bg);color:var(--accent)}
+  .badge-pending{background:var(--warning-bg);color:var(--warning)}
+  .badge-selesai{background:var(--success-bg);color:var(--success)}
+  .topbar{position:sticky;top:0;background:var(--card);border-bottom:0.5px solid var(--border);padding:12px 16px;display:flex;justify-content:space-between;align-items:center;z-index:5}
+  .navbar{position:fixed;bottom:0;left:0;right:0;max-width:480px;margin:0 auto;background:var(--card);border-top:0.5px solid var(--border);display:flex;z-index:5}
+  .navbtn{flex:1;text-align:center;padding:10px 4px;font-size:11px;color:var(--text-sec);border:none;background:none;border-radius:0}
+  .navbtn.active{color:var(--accent);font-weight:600}
+  .overlay{position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:20;padding:16px}
+  .modal{background:#fff;border-radius:14px;padding:20px;width:100%;max-width:400px;max-height:85vh;overflow:auto}
+  .stepper{display:flex;align-items:center;gap:10px}
+  .stepper button{width:40px;height:40px;padding:0;font-size:18px}
+  .stepper span{flex:1;text-align:center;font-size:18px;font-weight:600}
+  .searchbox{position:relative}
+  .sugglist{border:0.5px solid var(--border-strong);border-radius:var(--radius);margin-top:6px;max-height:220px;overflow:auto}
+  .suggitem{padding:10px 12px;font-size:14px;cursor:pointer;border-bottom:0.5px solid var(--border)}
+  .suggitem:last-child{border-bottom:none}
+  .suggitem:active{background:var(--bg)}
+  .tabs{display:flex;gap:6px;margin:12px;overflow-x:auto}
+  .tab{padding:8px 14px;border-radius:20px;font-size:13px;white-space:nowrap;border:0.5px solid var(--border-strong);background:#fff}
+  .tab.active{background:var(--text);color:#fff;border-color:var(--text)}
+  label.field-label{font-size:12px;color:var(--text-sec);display:block;margin:0 0 4px}
+  .field{margin-bottom:14px}
+  .errmsg{color:var(--danger);font-size:12px;margin-top:4px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+/* ================= KONFIGURASI SUPABASE ================= */
+const SUPABASE_URL = "https://qmlfxslhpiqewdlnirhe.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFtbGZ4c2xocGlxZXdkbG5pcmhlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODczMjIxOTQsImV4cCI6MjEwMjg5ODE5NH0.pVEdta4TRg16cEQ0xa3ZlC4NjSOcnXW_Q_hE-psvTR0";
+const EMAIL_DOMAIN = "@arcelio.local";
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+/* ================= STATE ================= */
+let state = {
+  session: null,
+  profile: null,
+  view: "permintaan",
+  kategoriList: [],
+  jenisList: [],
+  supplierList: [],
+  keranjang: [],       // draft item permintaan sebelum submit
+  tiketList: [],
+  loading: false,
+  error: ""
+};
+
+const app = document.getElementById("app");
+
+/* ================= UTIL ================= */
+function fmtRupiah(n){
+  n = Number(n) || 0;
+  return "Rp " + n.toLocaleString("id-ID");
+}
+function todayCode(){
+  const d = new Date();
+  return d.getFullYear() + String(d.getMonth()+1).padStart(2,"0") + String(d.getDate()).padStart(2,"0");
+}
+async function generateNoTiket(prefix, table){
+  const start = new Date(); start.setHours(0,0,0,0);
+  const { count } = await sb.from(table).select("id", { count: "exact", head: true }).gte("created_at", start.toISOString());
+  const urut = String((count||0) + 1).padStart(4,"0");
+  return prefix + "-" + todayCode() + "-" + urut;
+}
+
+/* Popup aman: nutup HANYA kalau mousedown DAN mouseup sama-sama di overlay (bukan di modal) */
+function openModal(innerHtml, onMount){
+  const overlay = document.createElement("div");
+  overlay.className = "overlay";
+  overlay.innerHTML = `<div class="modal">${innerHtml}</div>`;
+  let downOnOverlay = false;
+  overlay.addEventListener("mousedown", (e)=>{ downOnOverlay = (e.target === overlay); });
+  overlay.addEventListener("mouseup", (e)=>{
+    if(downOnOverlay && e.target === overlay){ overlay.remove(); }
+    downOnOverlay = false;
+  });
+  document.body.appendChild(overlay);
+  if(onMount) onMount(overlay);
+  return overlay;
+}
+
+/* ================= AUTH ================= */
+async function login(username, password){
+  state.error = "";
+  const email = username.trim().toLowerCase() + EMAIL_DOMAIN;
+  const { data, error } = await sb.auth.signInWithPassword({ email, password });
+  if(error){ state.error = "Username atau password salah."; render(); return; }
+  state.session = data.session;
+  await loadProfile();
+  await loadMasterData();
+  state.view = "permintaan";
+  await loadTiketList();
+  render();
+}
+async function loadProfile(){
+  const { data } = await sb.from("profiles").select("*").eq("id", state.session.user.id).single();
+  state.profile = data;
+}
+async function logout(){
+  await sb.auth.signOut();
+  state = { session:null, profile:null, view:"permintaan", kategoriList:[], jenisList:[], supplierList:[], keranjang:[], tiketList:[], loading:false, error:"" };
+  render();
+}
+async function changePassword(newPass){
+  const { error } = await sb.auth.updateUser({ password: newPass });
+  if(error){ alert("Gagal ganti password: " + error.message); return; }
+  alert("Password berhasil diganti.");
+}
+
+/* ================= MASTER DATA ================= */
+async function loadMasterData(){
+  const [k, j, s] = await Promise.all([
+    sb.from("kategori_barang").select("*").eq("is_active", true).order("nama_kategori"),
+    sb.from("jenis_barang").select("*, kategori_barang(nama_kategori)").eq("is_active", true).order("nama_barang"),
+    sb.from("supplier").select("*").eq("is_active", true).order("nama_supplier")
+  ]);
+  state.kategoriList = k.data || [];
+  state.jenisList = j.data || [];
+  state.supplierList = s.data || [];
+}
+async function tambahKategori(nama){
+  if(!nama.trim()) return;
+  await sb.from("kategori_barang").insert({ nama_kategori: nama.trim(), created_by: state.profile.id });
+  await loadMasterData(); render();
+}
+async function tambahJenisBarang(nama, kategoriId, satuan, harga){
+  if(!nama.trim() || !kategoriId || !satuan.trim()) return;
+  await sb.from("jenis_barang").insert({
+    nama_barang: nama.trim(), kategori_id: kategoriId, satuan: satuan.trim(),
+    harga_referensi: harga ? Number(harga) : null, created_by: state.profile.id
+  });
+  await loadMasterData(); render();
+}
+async function tambahSupplier(nama, kontak){
+  if(!nama.trim()) return;
+  await sb.from("supplier").insert({ nama_supplier: nama.trim(), kontak: kontak.trim() || null, created_by: state.profile.id });
+  await loadMasterData(); render();
+}
+
+/* ================= PERMINTAAN BARANG ================= */
+async function loadTiketList(){
+  const { data } = await sb.from("tiket_permintaan")
+    .select("*, profiles(nama), permintaan_item(*, jenis_barang(nama_barang, satuan))")
+    .order("created_at", { ascending: false }).limit(30);
+  state.tiketList = data || [];
+}
+
+function tambahKeKeranjang(item){
+  state.keranjang.push({
+    jenis_barang_id: item.id, nama_barang: item.nama_barang, satuan: item.satuan,
+    harga_referensi: item.harga_referensi, jumlah: 1, tipe: "biasa", boleh_diganti: false
+  });
+  render();
+}
+function hapusDariKeranjang(idx){ state.keranjang.splice(idx,1); render(); }
+function ubahQtyKeranjang(idx, delta){
+  state.keranjang[idx].jumlah = Math.max(1, state.keranjang[idx].jumlah + delta);
+  render();
+}
+function ubahTipeKeranjang(idx, tipe){ state.keranjang[idx].tipe = tipe; render(); }
+function ubahGantiKeranjang(idx, val){ state.keranjang[idx].boleh_diganti = val; render(); }
+
+async function submitPermintaan(){
+  if(state.keranjang.length === 0){ alert("Tambahkan minimal 1 barang dulu."); return; }
+  const no_tiket = await generateNoTiket("TP", "tiket_permintaan");
+  const { data: tiket, error } = await sb.from("tiket_permintaan")
+    .insert({ no_tiket, requester_id: state.profile.id }).select().single();
+  if(error){ alert("Gagal membuat tiket: " + error.message); return; }
+  const rows = state.keranjang.map(it => ({
+    tiket_permintaan_id: tiket.id, jenis_barang_id: it.jenis_barang_id,
+    jumlah_diminta: it.jumlah, tipe: it.tipe, boleh_diganti: it.boleh_diganti
+  }));
+  const { error: err2 } = await sb.from("permintaan_item").insert(rows);
+  if(err2){ alert("Gagal menyimpan barang: " + err2.message); return; }
+  state.keranjang = [];
+  await loadTiketList();
+  alert("Permintaan " + no_tiket + " berhasil dibuat.");
+  render();
+}
+
+/* ================= SEARCH BARANG ================= */
+function searchJenisBarang(keyword){
+  const kw = keyword.trim().toLowerCase();
+  if(!kw) return [];
+  return state.jenisList.filter(j => j.nama_barang.toLowerCase().includes(kw)).slice(0, 8);
+}
+
+/* ================= RENDER: LOGIN ================= */
+function renderLogin(){
+  app.innerHTML = `
+    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px">
+      <div class="card" style="width:100%;max-width:340px">
+        <p style="font-size:18px;font-weight:600;margin:0 0 4px">Kas & Purchasing</p>
+        <p class="muted" style="margin:0 0 20px">Arcelio Group</p>
+        <div class="field">
+          <label class="field-label">Username</label>
+          <input id="inUser" placeholder="pt / mgr / acct / user / prch" autocapitalize="off">
+        </div>
+        <div class="field">
+          <label class="field-label">Password</label>
+          <input id="inPass" type="password">
+        </div>
+        ${state.error ? `<p class="errmsg">${state.error}</p>` : ""}
+        <button class="primary" style="width:100%" id="btnLogin">Masuk</button>
+      </div>
+    </div>`;
+  document.getElementById("btnLogin").onclick = () => {
+    login(document.getElementById("inUser").value, document.getElementById("inPass").value);
+  };
+}
+
+/* ================= RENDER: SHELL ================= */
+function renderShell(content){
+  const role = state.profile.role;
+  const navItems = [
+    { id:"permintaan", label:"Permintaan" },
+    { id:"master", label:"Master data" },
+  ];
+  app.innerHTML = `
+    <div class="topbar">
+      <div>
+        <p style="margin:0;font-weight:600;font-size:14px">${state.profile.nama}</p>
+        <p class="muted" style="margin:0;font-size:12px;text-transform:capitalize">${role}</p>
+      </div>
+      <div class="row">
+        <button id="btnPass" style="font-size:12px;padding:8px 10px">Ganti password</button>
+        <button id="btnLogout" style="font-size:12px;padding:8px 10px">Keluar</button>
+      </div>
+    </div>
+    <div id="content">${content}</div>
+    <div class="navbar">
+      ${navItems.map(n => `<button class="navbtn ${state.view===n.id?'active':''}" data-view="${n.id}">${n.label}</button>`).join("")}
+    </div>`;
+  document.getElementById("btnLogout").onclick = logout;
+  document.getElementById("btnPass").onclick = () => {
+    openModal(`
+      <p style="font-weight:600;margin:0 0 12px">Ganti password</p>
+      <div class="field"><label class="field-label">Password baru</label><input id="newPass" type="password"></div>
+      <button class="primary" style="width:100%" id="btnSavePass">Simpan</button>
+    `, (overlay) => {
+      overlay.querySelector("#btnSavePass").onclick = async () => {
+        const val = overlay.querySelector("#newPass").value;
+        if(val.length < 6){ alert("Minimal 6 karakter."); return; }
+        await changePassword(val);
+        overlay.remove();
+      };
+    });
+  };
+  app.querySelectorAll(".navbtn").forEach(b => {
+    b.onclick = () => { state.view = b.dataset.view; render(); };
+  });
+}
+
+/* ================= RENDER: PERMINTAAN ================= */
+function renderPermintaan(){
+  const searchVal = window.__searchVal || "";
+  const results = searchJenisBarang(searchVal);
+  const html = `
+    <div class="card">
+      <p style="font-weight:600;margin:0 0 4px">Buat permintaan barang</p>
+      <p class="muted" style="margin:0 0 12px">Cari dari barang yang sudah ada</p>
+      <div class="searchbox">
+        <input id="searchInput" placeholder="Cari nama barang..." value="${searchVal}">
+      </div>
+      <div id="suggBox" class="sugglist" style="${results.length? '':'display:none'}">
+        ${results.map(r => `
+          <div class="suggitem" data-id="${r.id}">${r.nama_barang}
+            <span class="muted">· ${r.satuan}${r.harga_referensi? ' · ' + fmtRupiah(r.harga_referensi) : ''}</span>
+          </div>`).join("")}
+      </div>
+      ${searchVal && results.length===0 ? `<p class="muted" style="margin:8px 0 0">Tidak ditemukan. Tambahkan lewat menu Master data.</p>` : ""}
+    </div>
+
+    ${state.keranjang.length ? `
+    <div class="card">
+      <p style="font-weight:600;margin:0 0 12px">Barang di permintaan ini</p>
+      ${state.keranjang.map((it, idx) => `
+        <div style="border-bottom:0.5px solid var(--border);padding:10px 0">
+          <div class="between">
+            <span style="font-size:14px;font-weight:500">${it.nama_barang}</span>
+            <button style="padding:4px 8px;font-size:12px" data-hapus="${idx}">Hapus</button>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <div class="stepper" style="flex:1">
+              <button data-qty="${idx}" data-delta="-1">−</button>
+              <span>${it.jumlah} ${it.satuan}</span>
+              <button data-qty="${idx}" data-delta="1">+</button>
+            </div>
+          </div>
+          <div class="row" style="margin-top:8px;gap:6px">
+            <button class="tab ${it.tipe==='wajib'?'active':''}" data-tipe="${idx}" data-val="wajib">Wajib</button>
+            <button class="tab ${it.tipe==='biasa'?'active':''}" data-tipe="${idx}" data-val="biasa">Biasa</button>
+            <label class="row" style="font-size:12px;margin-left:auto">
+              <input type="checkbox" style="width:auto" data-ganti="${idx}" ${it.boleh_diganti?'checked':''}> Boleh diganti
+            </label>
+          </div>
+        </div>
+      `).join("")}
+      <button class="primary" style="width:100%;margin-top:12px" id="btnSubmitPermintaan">Ajukan permintaan (${state.keranjang.length} barang)</button>
+    </div>` : ""}
+
+    <div class="card">
+      <p style="font-weight:600;margin:0 0 12px">Riwayat permintaan</p>
+      ${state.tiketList.length===0 ? `<p class="muted">Belum ada permintaan.</p>` : state.tiketList.map(t => `
+        <div style="border-bottom:0.5px solid var(--border);padding:10px 0">
+          <div class="between">
+            <span style="font-size:13px;font-weight:600">${t.no_tiket}</span>
+            <span class="muted" style="font-size:12px">${t.profiles?.nama || ''}</span>
+          </div>
+          ${(t.permintaan_item||[]).map(pi => `
+            <div class="between" style="margin-top:6px">
+              <span style="font-size:13px">${pi.jenis_barang?.nama_barang} · ${pi.jumlah_diminta} ${pi.jenis_barang?.satuan}</span>
+              <span class="badge badge-${pi.tipe}">${pi.tipe}</span>
+              <span class="badge badge-${pi.status==='selesai'?'selesai':'pending'}">${pi.status}</span>
+            </div>
+          `).join("")}
+        </div>
+      `).join("")}
+    </div>
+  `;
+  renderShell(html);
+
+  const searchInput = document.getElementById("searchInput");
+  searchInput.oninput = () => { window.__searchVal = searchInput.value; render(); };
+  searchInput.focus();
+  searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
+
+  document.querySelectorAll("#suggBox .suggitem").forEach(el => {
+    el.onclick = () => {
+      const item = state.jenisList.find(j => j.id === el.dataset.id);
+      window.__searchVal = "";
+      tambahKeKeranjang(item);
+    };
+  });
+  document.querySelectorAll("[data-hapus]").forEach(el => el.onclick = () => hapusDariKeranjang(Number(el.dataset.hapus)));
+  document.querySelectorAll("[data-qty]").forEach(el => el.onclick = () => ubahQtyKeranjang(Number(el.dataset.qty), Number(el.dataset.delta)));
+  document.querySelectorAll("[data-tipe]").forEach(el => el.onclick = () => ubahTipeKeranjang(Number(el.dataset.tipe), el.dataset.val));
+  document.querySelectorAll("[data-ganti]").forEach(el => el.onchange = () => ubahGantiKeranjang(Number(el.dataset.ganti), el.checked));
+  const btnSubmit = document.getElementById("btnSubmitPermintaan");
+  if(btnSubmit) btnSubmit.onclick = submitPermintaan;
+}
+
+/* ================= RENDER: MASTER DATA ================= */
+function renderMaster(){
+  const tab = window.__masterTab || "kategori";
+  const isOwner = state.profile.role === "owner";
+  let body = "";
+  if(tab === "kategori"){
+    body = `
+      <div class="field"><input id="mNama" placeholder="Nama kategori baru"></div>
+      <button class="primary" style="width:100%" id="btnAddKategori">Tambah kategori</button>
+      <div style="margin-top:16px">
+        ${state.kategoriList.map(k => `<div style="padding:8px 0;border-bottom:0.5px solid var(--border)">${k.nama_kategori}</div>`).join("")}
+      </div>`;
+  } else if(tab === "jenis"){
+    body = `
+      <div class="field"><label class="field-label">Nama barang</label><input id="mNamaBarang"></div>
+      <div class="field"><label class="field-label">Kategori</label>
+        <select id="mKategori">${state.kategoriList.map(k=>`<option value="${k.id}">${k.nama_kategori}</option>`).join("")}</select>
+      </div>
+      <div class="row" style="gap:8px">
+        <div class="field" style="flex:1"><label class="field-label">Satuan</label><input id="mSatuan" placeholder="pcs/kg/liter"></div>
+        <div class="field" style="flex:1"><label class="field-label">Harga referensi</label><input id="mHarga" placeholder="opsional"></div>
+      </div>
+      <button class="primary" style="width:100%" id="btnAddJenis">Tambah barang</button>
+      <div style="margin-top:16px">
+        ${state.jenisList.map(j => `<div style="padding:8px 0;border-bottom:0.5px solid var(--border)">
+          <div class="between"><span>${j.nama_barang}</span><span class="muted">${j.satuan}</span></div>
+          <span class="muted" style="font-size:12px">${j.kategori_barang?.nama_kategori || ''}</span>
+        </div>`).join("")}
+      </div>`;
+  } else {
+    body = `
+      <div class="field"><label class="field-label">Nama supplier</label><input id="mNamaSup"></div>
+      <div class="field"><label class="field-label">Kontak (opsional)</label><input id="mKontak"></div>
+      <button class="primary" style="width:100%" id="btnAddSupplier">Tambah supplier</button>
+      <div style="margin-top:16px">
+        ${state.supplierList.map(s => `<div style="padding:8px 0;border-bottom:0.5px solid var(--border)">${s.nama_supplier}</div>`).join("")}
+      </div>`;
+  }
+  const html = `
+    <div class="tabs">
+      <button class="tab ${tab==='kategori'?'active':''}" data-mtab="kategori">Kategori</button>
+      <button class="tab ${tab==='jenis'?'active':''}" data-mtab="jenis">Jenis barang</button>
+      <button class="tab ${tab==='supplier'?'active':''}" data-mtab="supplier">Supplier</button>
+    </div>
+    <div class="card">
+      ${!isOwner ? `<p class="muted" style="margin:0 0 12px">Anda bisa menambah data baru. Ubah/hapus hanya bisa dilakukan Owner.</p>` : ""}
+      ${body}
+    </div>`;
+  renderShell(html);
+
+  document.querySelectorAll("[data-mtab]").forEach(el => el.onclick = () => { window.__masterTab = el.dataset.mtab; render(); });
+  const btnK = document.getElementById("btnAddKategori");
+  if(btnK) btnK.onclick = () => tambahKategori(document.getElementById("mNama").value);
+  const btnJ = document.getElementById("btnAddJenis");
+  if(btnJ) btnJ.onclick = () => tambahJenisBarang(
+    document.getElementById("mNamaBarang").value,
+    document.getElementById("mKategori").value,
+    document.getElementById("mSatuan").value,
+    document.getElementById("mHarga").value
+  );
+  const btnS = document.getElementById("btnAddSupplier");
+  if(btnS) btnS.onclick = () => tambahSupplier(document.getElementById("mNamaSup").value, document.getElementById("mKontak").value);
+}
+
+/* ================= MAIN RENDER ================= */
+function render(){
+  if(!state.session || !state.profile){ renderLogin(); return; }
+  if(state.view === "master") renderMaster();
+  else renderPermintaan();
+}
+
+/* ================= INIT ================= */
+(async function init(){
+  const { data } = await sb.auth.getSession();
+  if(data.session){
+    state.session = data.session;
+    await loadProfile();
+    await loadMasterData();
+    await loadTiketList();
+  }
+  render();
+})();
+</script>
+</body>
+</html>
