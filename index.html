@@ -526,7 +526,10 @@ async function submitNota(){
     const { data: pi } = await sb.from("permintaan_item").select("*").eq("id", it.permintaan_item_id).single();
     if(pi){
       const terpenuhiBaru = Number(pi.jumlah_terpenuhi) + Number(it.jumlah);
-      const statusBaru = terpenuhiBaru >= pi.jumlah_diminta ? "selesai" : "sebagian";
+      // qty terpenuhi BUKAN berarti selesai — selesai hanya setelah barang
+      // dikonfirmasi diterima (lihat terimaBarangItem). Ini berlaku sama
+      // untuk semua role, termasuk Owner.
+      const statusBaru = terpenuhiBaru >= pi.jumlah_diminta ? "menunggu_terima" : "sebagian";
       await sb.from("permintaan_item").update({ jumlah_terpenuhi: terpenuhiBaru, status: statusBaru }).eq("id", pi.id);
     }
   }
@@ -538,9 +541,23 @@ async function submitNota(){
 }
 
 async function terimaBarangItem(notaItemId){
+  const { data: notaItem } = await sb.from("nota_item").select("permintaan_item_id").eq("id", notaItemId).single();
   await sb.from("nota_item").update({
     status_penerimaan: "diterima", diterima_oleh: state.profile.id, diterima_at: new Date().toISOString()
   }).eq("id", notaItemId);
+
+  if(notaItem?.permintaan_item_id){
+    const { data: pi } = await sb.from("permintaan_item").select("*").eq("id", notaItem.permintaan_item_id).single();
+    if(pi && pi.status === "menunggu_terima"){
+      const { data: semuaNotaItem } = await sb.from("nota_item").select("status_penerimaan")
+        .eq("permintaan_item_id", notaItem.permintaan_item_id);
+      const semuaSudahDiterima = (semuaNotaItem || []).every(ni => ni.status_penerimaan === "diterima");
+      if(semuaSudahDiterima){
+        await sb.from("permintaan_item").update({ status: "selesai" }).eq("id", pi.id);
+      }
+    }
+  }
+
   await catatLog("terima_barang", "permintaan", { nota_item_id: notaItemId });
   await loadTerimaList();
   await loadTerimaLuarList();
@@ -735,7 +752,7 @@ async function voidNota(notaId){
       const { data: pi } = await sb.from("permintaan_item").select("*").eq("id", ni.permintaan_item_id).single();
       if(pi){
         const terpenuhiBaru = Math.max(0, Number(pi.jumlah_terpenuhi) - Number(ni.jumlah_dibeli));
-        const statusBaru = terpenuhiBaru <= 0 ? "pending" : (terpenuhiBaru >= pi.jumlah_diminta ? "selesai" : "sebagian");
+        const statusBaru = terpenuhiBaru <= 0 ? "pending" : (terpenuhiBaru >= pi.jumlah_diminta ? "menunggu_terima" : "sebagian");
         await sb.from("permintaan_item").update({ jumlah_terpenuhi: terpenuhiBaru, status: statusBaru }).eq("id", pi.id);
       }
     }
