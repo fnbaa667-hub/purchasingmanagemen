@@ -230,9 +230,10 @@ async function tambahSupplier(nama, alamat, namaPenjual, kontak){
 
 /* ================= NOTA & PENERIMAAN: LOADER ================= */
 async function loadNotaList(){
-  const { data } = await sb.from("tiket_nota")
-    .select("*, supplier(nama_supplier), profiles(nama), nota_item(*, jenis_barang(nama_barang, satuan))")
+  const { data, error } = await sb.from("tiket_nota")
+    .select("*, supplier(nama_supplier), profiles!purchasing_id(nama), nota_item(*, jenis_barang(nama_barang, satuan))")
     .order("created_at", { ascending: false }).limit(30);
+  if(error) console.error("loadNotaList gagal:", error.message);
   state.notaList = data || [];
 }
 async function loadPermintaanTerbuka(){
@@ -253,7 +254,7 @@ async function loadKasData(){
   const { data: ledger } = await sb.from("kas_ledger").select("saldo_berjalan").order("created_at", { ascending:false }).limit(1);
   state.saldoKas = (ledger && ledger.length) ? Number(ledger[0].saldo_berjalan) : 0;
 
-  const { data: belum } = await sb.from("tiket_nota").select("*, supplier(nama_supplier)")
+  const { data: belum } = await sb.from("tiket_nota").select("*, supplier(nama_supplier), nota_item(status_penerimaan)")
     .eq("status_kas","belum_diajukan").eq("is_void", false).order("created_at");
   state.notaBelumDiajukan = belum || [];
 
@@ -387,9 +388,11 @@ function openGantiBarangModal(idx){
     <p style="font-weight:600;margin:0 0 12px">Ganti barang yang dibeli</p>
     <input id="gbSearch" placeholder="Cari barang pengganti...">
     <div id="gbResults" class="sugglist" style="margin-top:8px"></div>
+    <div id="gbTambahWrap"></div>
   `, (overlay) => {
     const inp = overlay.querySelector("#gbSearch");
     const box = overlay.querySelector("#gbResults");
+    const tambahWrap = overlay.querySelector("#gbTambahWrap");
     function refresh(){
       const res = searchJenisBarang(inp.value);
       box.innerHTML = res.map(r => `<div class="suggitem" data-id="${r.id}">${r.nama_barang} <span class="muted">· ${r.satuan}</span></div>`).join("");
@@ -405,6 +408,21 @@ function openGantiBarangModal(idx){
           render();
         };
       });
+      tambahWrap.innerHTML = (inp.value.trim() && res.length===0)
+        ? `<button style="width:100%;margin-top:8px;font-size:13px" id="btnGbTambahBaru">+ Tambah "${inp.value.trim()}" sebagai barang baru</button>` : "";
+      const btnGbTambahBaru = overlay.querySelector("#btnGbTambahBaru");
+      if(btnGbTambahBaru) btnGbTambahBaru.onclick = () => {
+        const kataAwal = inp.value.trim();
+        overlay.remove();
+        openTambahBarangBaruModal(kataAwal, (item) => {
+          const line = state.notaKeranjang[idx];
+          line.jenis_barang_id = item.id;
+          line.nama_barang = item.nama_barang;
+          line.satuan = item.satuan;
+          line.is_substitusi = (item.id !== line.jenis_barang_id_asli);
+          render();
+        });
+      };
     }
     inp.oninput = refresh;
     inp.focus();
@@ -795,6 +813,44 @@ async function submitManualKas(){
   render();
 }
 
+function openTambahBarangBaruModal(namaAwal, onCreated){
+  openModal(`
+    <p style="font-weight:600;margin:0 0 12px">Tambah barang baru</p>
+    <div class="field"><label class="field-label">Nama barang</label><input id="qbNama" value="${(namaAwal||'').replace(/"/g,'&quot;')}"></div>
+    <div class="field">
+      <label class="field-label">Kategori (wajib dipilih)</label>
+      <select id="qbKategori">
+        <option value="" disabled selected>-- pilih kategori --</option>
+        ${state.kategoriList.map(k => `<option value="${k.id}">${k.nama_kategori}</option>`).join("")}
+      </select>
+    </div>
+    <div class="row" style="gap:8px">
+      <div class="field" style="flex:1"><label class="field-label">Satuan</label><input id="qbSatuan" placeholder="pcs/kg/liter"></div>
+      <div class="field" style="flex:1"><label class="field-label">Harga referensi</label><input id="qbHarga" placeholder="opsional"></div>
+    </div>
+    <p id="qbErr" class="errmsg" style="display:none">Kategori wajib dipilih.</p>
+    <button class="primary" style="width:100%" id="btnQbSimpan">Simpan & pakai barang ini</button>
+  `, (overlay) => {
+    overlay.querySelector("#btnQbSimpan").onclick = async () => {
+      const nama = overlay.querySelector("#qbNama").value.trim();
+      const kategoriId = overlay.querySelector("#qbKategori").value;
+      const satuan = overlay.querySelector("#qbSatuan").value.trim();
+      const harga = overlay.querySelector("#qbHarga").value;
+      if(!kategoriId){ overlay.querySelector("#qbErr").style.display = "block"; return; }
+      if(!nama || !satuan){ alert("Nama dan satuan wajib diisi."); return; }
+      const { data: item, error } = await sb.from("jenis_barang").insert({
+        nama_barang: nama, kategori_id: kategoriId, satuan,
+        harga_referensi: harga ? Number(harga) : null, created_by: state.profile.id
+      }).select("*, kategori_barang(nama_kategori)").single();
+      if(error){ alert("Gagal menambah barang: " + error.message); return; }
+      await catatLog("tambah_jenis_barang", "master_data", { nama_barang: nama, dari_layar: "quick_add" });
+      await loadMasterData();
+      overlay.remove();
+      onCreated(item);
+    };
+  });
+}
+
 /* ================= RENDER: LOGIN ================= */
 function renderLogin(){
   app.innerHTML = `
@@ -898,7 +954,7 @@ function renderPermintaan(){
             <span class="muted">· ${r.satuan}${r.harga_referensi? ' · ' + fmtRupiah(r.harga_referensi) : ''}</span>
           </div>`).join("")}
       </div>
-      ${searchVal && results.length===0 ? `<p class="muted" style="margin:8px 0 0">Tidak ditemukan. Tambahkan lewat menu Master data.</p>` : ""}
+      ${searchVal && results.length===0 ? `<button style="width:100%;margin-top:8px;font-size:13px" id="btnTambahBarangCepat">+ Tambah "${searchVal}" sebagai barang baru</button>` : ""}
     </div>
 
     ${state.keranjang.length ? `
@@ -973,6 +1029,11 @@ function renderPermintaan(){
   if(btnSubmit) btnSubmit.onclick = submitPermintaan;
   document.querySelectorAll("[data-terima]").forEach(el => el.onclick = () => terimaBarangItem(el.dataset.terima));
   document.querySelectorAll("[data-voidpi]").forEach(el => el.onclick = () => voidPermintaanItem(el.dataset.voidpi));
+  const btnTambahCepat = document.getElementById("btnTambahBarangCepat");
+  if(btnTambahCepat) btnTambahCepat.onclick = () => openTambahBarangBaruModal(searchVal, (item) => {
+    window.__searchVal = "";
+    tambahKeKeranjang(item);
+  });
 }
 
 /* ================= RENDER: NOTA ================= */
@@ -1010,6 +1071,7 @@ function renderNota(){
       ${luarResults.length ? `<div class="sugglist" id="luarBox">
         ${luarResults.map(r => `<div class="suggitem" data-luarid="${r.id}">${r.nama_barang} <span class="muted">· ${r.satuan}</span></div>`).join("")}
       </div>` : ""}
+      ${window.__notaLuarSearch && luarResults.length===0 ? `<button style="width:100%;margin-top:8px;font-size:13px" id="btnTambahBarangLuarCepat">+ Tambah "${window.__notaLuarSearch}" sebagai barang baru</button>` : ""}
 
       ${state.notaKeranjang.length ? `
       <p style="font-weight:600;margin:16px 0 8px;font-size:14px">Barang di nota ini</p>
@@ -1086,6 +1148,11 @@ function renderNota(){
         window.__notaLuarSearch = "";
         tambahBarangLuarPermintaan(item);
       };
+    });
+    const btnTambahLuarCepat = document.getElementById("btnTambahBarangLuarCepat");
+    if(btnTambahLuarCepat) btnTambahLuarCepat.onclick = () => openTambahBarangBaruModal(window.__notaLuarSearch, (item) => {
+      window.__notaLuarSearch = "";
+      tambahBarangLuarPermintaan(item);
     });
     document.querySelectorAll("[data-hapusnota]").forEach(el => el.onclick = () => hapusDariNotaKeranjang(Number(el.dataset.hapusnota)));
     document.querySelectorAll("[data-qtynota]").forEach(el => el.onclick = () => ubahQtyNotaKeranjang(Number(el.dataset.qtynota), Number(el.dataset.delta)));
@@ -1215,17 +1282,25 @@ function renderKas(){
   }
 
   if(["purchasing","owner"].includes(role)){
+    const totalItemBelum = n => (n.nota_item||[]).length;
+    const itemDiterima = n => (n.nota_item||[]).filter(ni => ni.status_penerimaan === "diterima").length;
+    const siapDiajukan = n => totalItemBelum(n) > 0 && itemDiterima(n) === totalItemBelum(n);
     html += `
     <div class="card">
-      <p style="font-weight:600;margin:0 0 12px">Ajukan top-up</p>
+      <p style="font-weight:600;margin:0 0 4px">Ajukan top-up</p>
+      <p class="muted" style="margin:0 0 12px">Hanya nota yang semua barangnya sudah dikonfirmasi diterima yang bisa diajukan.</p>
       ${state.notaBelumDiajukan.length===0 ? '<p class="muted">Tidak ada nota yang siap diajukan.</p>' :
-        state.notaBelumDiajukan.map(n => `
+        state.notaBelumDiajukan.map(n => siapDiajukan(n) ? `
         <label class="row" style="padding:8px 0;border-bottom:0.5px solid var(--border)">
           <input type="checkbox" style="width:auto" data-topup="${n.id}" ${state.topupPilih.includes(n.id)?'checked':''}>
           <span style="flex:1;font-size:13px">${n.no_nota} · ${n.supplier?.nama_supplier}</span>
           <span style="font-size:13px;font-weight:600">${fmtRupiah(n.total_nominal)}</span>
-        </label>`).join("")}
-      ${state.notaBelumDiajukan.length ? `<button class="primary" style="width:100%;margin-top:12px" id="btnSubmitTopup">Ajukan top-up (${state.topupPilih.length} nota)</button>` : ""}
+        </label>` : `
+        <div class="row" style="padding:8px 0;border-bottom:0.5px solid var(--border);opacity:0.6">
+          <span style="flex:1;font-size:13px">${n.no_nota} · ${n.supplier?.nama_supplier}</span>
+          <span class="badge badge-pending">${itemDiterima(n)}/${totalItemBelum(n)} diterima</span>
+        </div>`).join("")}
+      ${state.notaBelumDiajukan.some(siapDiajukan) ? `<button class="primary" style="width:100%;margin-top:12px" id="btnSubmitTopup">Ajukan top-up (${state.topupPilih.length} nota)</button>` : ""}
     </div>`;
   }
 
