@@ -173,9 +173,11 @@ async function loadLogAktivitas(){
 /* ================= AUTH ================= */
 async function login(username, password){
   state.error = "";
-  const email = username.trim().toLowerCase() + EMAIL_DOMAIN;
+  let uname = username.trim().toLowerCase();
+  if(uname.includes("@")) uname = uname.split("@")[0];
+  const email = uname + EMAIL_DOMAIN;
   const { data, error } = await sb.auth.signInWithPassword({ email, password });
-  if(error){ state.error = "Username atau password salah."; render(); return; }
+  if(error){ state.error = "Gagal masuk (" + email + "): " + error.message; render(); return; }
   state.session = data.session;
   await loadProfile();
   await loadMasterData();
