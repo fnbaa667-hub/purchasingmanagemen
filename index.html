@@ -196,9 +196,13 @@ async function tambahJenisBarang(nama, kategoriId, satuan, harga){
   await catatLog("tambah_jenis_barang", "master_data", { nama_barang: nama.trim() });
   await loadMasterData(); render();
 }
-async function tambahSupplier(nama, kontak){
+async function tambahSupplier(nama, alamat, namaPenjual, kontak){
   if(!nama.trim()) return;
-  await sb.from("supplier").insert({ nama_supplier: nama.trim(), kontak: kontak.trim() || null, created_by: state.profile.id });
+  await sb.from("supplier").insert({
+    nama_supplier: nama.trim(), alamat: alamat.trim() || null,
+    nama_penjual: namaPenjual.trim() || null, kontak: kontak.trim() || null,
+    created_by: state.profile.id
+  });
   await catatLog("tambah_supplier", "master_data", { nama_supplier: nama.trim() });
   await loadMasterData(); render();
 }
@@ -382,10 +386,11 @@ async function submitNota(){
 
   const { data: ledgerTerakhir } = await sb.from("kas_ledger").select("saldo_berjalan").order("created_at",{ascending:false}).limit(1);
   const saldoLama = (ledgerTerakhir && ledgerTerakhir.length) ? Number(ledgerTerakhir[0].saldo_berjalan) : 0;
-  await sb.from("kas_ledger").insert({
+  const { error: eLedger } = await sb.from("kas_ledger").insert({
     jenis:"keluar", jumlah: totalNominal, saldo_berjalan: saldoLama - totalNominal,
     ref_tabel: "tiket_nota", ref_id: nota.id, keterangan: "Belanja nota " + no_nota
   });
+  if(eLedger){ alert("Nota tersimpan tapi GAGAL mencatat kas keluar: " + eLedger.message + " — hubungi admin, saldo kas tidak akurat sampai ini diperbaiki."); }
 
   for(const it of state.notaKeranjang){
     const { error: eItem } = await sb.from("nota_item").insert({
@@ -486,10 +491,11 @@ async function keputusanTransfer(pengajuanId, keputusan){
   if(keputusan === "sudah_transfer"){
     const { data: ledgerTerakhir } = await sb.from("kas_ledger").select("saldo_berjalan").order("created_at",{ascending:false}).limit(1);
     const saldoLama = (ledgerTerakhir && ledgerTerakhir.length) ? Number(ledgerTerakhir[0].saldo_berjalan) : 0;
-    await sb.from("kas_ledger").insert({
+    const { error: eLedger } = await sb.from("kas_ledger").insert({
       jenis: "masuk", jumlah: pengajuan.total_nominal, saldo_berjalan: saldoLama + Number(pengajuan.total_nominal),
       ref_tabel: "pengajuan_transfer", ref_id: pengajuanId, keterangan: "Transfer dari Owner " + pengajuan.no_pengajuan_transfer
     });
+    if(eLedger){ alert("GAGAL mencatat kas masuk: " + eLedger.message); return; }
     await sb.from("pengajuan_transfer").update({
       status: "sudah_transfer", keputusan_oleh: state.profile.id, keputusan_at: new Date().toISOString()
     }).eq("id", pengajuanId);
@@ -629,6 +635,112 @@ async function voidPengajuanTransfer(pengajuanId){
     alert("Pengajuan transfer " + pengajuan.no_pengajuan_transfer + " berhasil di-void.");
     render();
   });
+}
+
+/* ================= MASTER DATA: EDIT & NONAKTIFKAN (khusus Owner) ================= */
+function openEditKategoriModal(k){
+  openModal(`
+    <p style="font-weight:600;margin:0 0 12px">Edit kategori</p>
+    <div class="field"><input id="editNama" value="${k.nama_kategori}"></div>
+    <button class="primary" style="width:100%;margin-bottom:8px" id="btnSaveEdit">Simpan</button>
+    <button class="danger" style="width:100%" id="btnNonaktif">Nonaktifkan kategori ini</button>
+  `, (overlay) => {
+    overlay.querySelector("#btnSaveEdit").onclick = async () => {
+      const val = overlay.querySelector("#editNama").value.trim();
+      if(!val) return;
+      await sb.from("kategori_barang").update({ nama_kategori: val }).eq("id", k.id);
+      await catatLog("edit_kategori", "master_data", { id: k.id, nama: val });
+      overlay.remove(); await loadMasterData(); render();
+    };
+    overlay.querySelector("#btnNonaktif").onclick = async () => {
+      if(!confirm("Nonaktifkan kategori ini? Barang lama tidak terhapus, tapi kategori ini tidak muncul lagi untuk data baru.")) return;
+      await sb.from("kategori_barang").update({ is_active: false }).eq("id", k.id);
+      await catatLog("nonaktifkan_kategori", "master_data", { id: k.id });
+      overlay.remove(); await loadMasterData(); render();
+    };
+  });
+}
+function openEditJenisModal(j){
+  openModal(`
+    <p style="font-weight:600;margin:0 0 12px">Edit barang</p>
+    <div class="field"><label class="field-label">Nama barang</label><input id="editNamaBarang" value="${j.nama_barang}"></div>
+    <div class="field"><label class="field-label">Kategori</label>
+      <select id="editKategori">${state.kategoriList.map(k=>`<option value="${k.id}" ${k.id===j.kategori_id?'selected':''}>${k.nama_kategori}</option>`).join("")}</select>
+    </div>
+    <div class="row" style="gap:8px">
+      <div class="field" style="flex:1"><label class="field-label">Satuan</label><input id="editSatuan" value="${j.satuan}"></div>
+      <div class="field" style="flex:1"><label class="field-label">Harga referensi</label><input id="editHarga" value="${j.harga_referensi||''}"></div>
+    </div>
+    <button class="primary" style="width:100%;margin-bottom:8px" id="btnSaveEditJenis">Simpan</button>
+    <button class="danger" style="width:100%" id="btnNonaktifJenis">Nonaktifkan barang ini</button>
+  `, (overlay) => {
+    overlay.querySelector("#btnSaveEditJenis").onclick = async () => {
+      const nama = overlay.querySelector("#editNamaBarang").value.trim();
+      const kategoriId = overlay.querySelector("#editKategori").value;
+      const satuan = overlay.querySelector("#editSatuan").value.trim();
+      const harga = overlay.querySelector("#editHarga").value;
+      if(!nama || !satuan) return;
+      await sb.from("jenis_barang").update({
+        nama_barang: nama, kategori_id: kategoriId, satuan, harga_referensi: harga ? Number(harga) : null
+      }).eq("id", j.id);
+      await catatLog("edit_jenis_barang", "master_data", { id: j.id, nama });
+      overlay.remove(); await loadMasterData(); render();
+    };
+    overlay.querySelector("#btnNonaktifJenis").onclick = async () => {
+      if(!confirm("Nonaktifkan barang ini?")) return;
+      await sb.from("jenis_barang").update({ is_active: false }).eq("id", j.id);
+      await catatLog("nonaktifkan_jenis_barang", "master_data", { id: j.id });
+      overlay.remove(); await loadMasterData(); render();
+    };
+  });
+}
+function openEditSupplierModal(s){
+  openModal(`
+    <p style="font-weight:600;margin:0 0 12px">Edit supplier</p>
+    <div class="field"><label class="field-label">Nama toko/supplier</label><input id="editNamaSup" value="${s.nama_supplier}"></div>
+    <div class="field"><label class="field-label">Alamat</label><input id="editAlamat" value="${s.alamat||''}"></div>
+    <div class="field"><label class="field-label">Nama penjual</label><input id="editPenjual" value="${s.nama_penjual||''}"></div>
+    <div class="field"><label class="field-label">Kontak</label><input id="editKontak" value="${s.kontak||''}"></div>
+    <button class="primary" style="width:100%;margin-bottom:8px" id="btnSaveEditSup">Simpan</button>
+    <button class="danger" style="width:100%" id="btnNonaktifSup">Nonaktifkan supplier ini</button>
+  `, (overlay) => {
+    overlay.querySelector("#btnSaveEditSup").onclick = async () => {
+      const nama = overlay.querySelector("#editNamaSup").value.trim();
+      if(!nama) return;
+      await sb.from("supplier").update({
+        nama_supplier: nama,
+        alamat: overlay.querySelector("#editAlamat").value.trim() || null,
+        nama_penjual: overlay.querySelector("#editPenjual").value.trim() || null,
+        kontak: overlay.querySelector("#editKontak").value.trim() || null
+      }).eq("id", s.id);
+      await catatLog("edit_supplier", "master_data", { id: s.id, nama });
+      overlay.remove(); await loadMasterData(); render();
+    };
+    overlay.querySelector("#btnNonaktifSup").onclick = async () => {
+      if(!confirm("Nonaktifkan supplier ini?")) return;
+      await sb.from("supplier").update({ is_active: false }).eq("id", s.id);
+      await catatLog("nonaktifkan_supplier", "master_data", { id: s.id });
+      overlay.remove(); await loadMasterData(); render();
+    };
+  });
+}
+
+async function submitManualKas(){
+  const jenis = window.__kasJenis || "masuk";
+  const jumlah = Number(document.getElementById("manualJumlah").value);
+  const keterangan = document.getElementById("manualKeterangan").value.trim();
+  if(!jumlah || jumlah <= 0){ alert("Nominal harus lebih dari 0."); return; }
+  const { data: ledgerTerakhir } = await sb.from("kas_ledger").select("saldo_berjalan").order("created_at",{ascending:false}).limit(1);
+  const saldoLama = (ledgerTerakhir && ledgerTerakhir.length) ? Number(ledgerTerakhir[0].saldo_berjalan) : 0;
+  const saldoBaru = jenis === "masuk" ? saldoLama + jumlah : saldoLama - jumlah;
+  const { error } = await sb.from("kas_ledger").insert({
+    jenis, jumlah, saldo_berjalan: saldoBaru, ref_tabel: "manual", keterangan: keterangan || "Penyesuaian manual"
+  });
+  if(error){ alert("Gagal simpan: " + error.message); return; }
+  await catatLog("kas_manual", "kas", { jenis, jumlah, keterangan });
+  await loadKasData();
+  alert("Penyesuaian kas berhasil disimpan.");
+  render();
 }
 
 /* ================= RENDER: LOGIN ================= */
@@ -913,7 +1025,10 @@ function renderMaster(){
       <div class="field"><input id="mNama" placeholder="Nama kategori baru"></div>
       <button class="primary" style="width:100%" id="btnAddKategori">Tambah kategori</button>
       <div style="margin-top:16px">
-        ${state.kategoriList.map(k => `<div style="padding:8px 0;border-bottom:0.5px solid var(--border)">${k.nama_kategori}</div>`).join("")}
+        ${state.kategoriList.map(k => `<div class="between" style="padding:8px 0;border-bottom:0.5px solid var(--border)">
+          <span>${k.nama_kategori}</span>
+          ${isOwner ? `<button style="padding:3px 8px;font-size:11px" data-editkat="${k.id}">Edit</button>` : ""}
+        </div>`).join("")}
       </div>`;
   } else if(tab === "jenis"){
     body = `
@@ -929,16 +1044,28 @@ function renderMaster(){
       <div style="margin-top:16px">
         ${state.jenisList.map(j => `<div style="padding:8px 0;border-bottom:0.5px solid var(--border)">
           <div class="between"><span>${j.nama_barang}</span><span class="muted">${j.satuan}</span></div>
-          <span class="muted" style="font-size:12px">${j.kategori_barang?.nama_kategori || ''}</span>
+          <div class="between">
+            <span class="muted" style="font-size:12px">${j.kategori_barang?.nama_kategori || ''}</span>
+            ${isOwner ? `<button style="padding:3px 8px;font-size:11px" data-editjenis="${j.id}">Edit</button>` : ""}
+          </div>
         </div>`).join("")}
       </div>`;
   } else {
     body = `
-      <div class="field"><label class="field-label">Nama supplier</label><input id="mNamaSup"></div>
+      <div class="field"><label class="field-label">Nama toko/supplier</label><input id="mNamaSup"></div>
+      <div class="field"><label class="field-label">Alamat (opsional)</label><input id="mAlamat"></div>
+      <div class="field"><label class="field-label">Nama penjual (opsional)</label><input id="mPenjual"></div>
       <div class="field"><label class="field-label">Kontak (opsional)</label><input id="mKontak"></div>
       <button class="primary" style="width:100%" id="btnAddSupplier">Tambah supplier</button>
       <div style="margin-top:16px">
-        ${state.supplierList.map(s => `<div style="padding:8px 0;border-bottom:0.5px solid var(--border)">${s.nama_supplier}</div>`).join("")}
+        ${state.supplierList.map(s => `<div style="padding:8px 0;border-bottom:0.5px solid var(--border)">
+          <div class="between">
+            <span>${s.nama_supplier}</span>
+            ${isOwner ? `<button style="padding:3px 8px;font-size:11px" data-editsup="${s.id}">Edit</button>` : ""}
+          </div>
+          ${s.alamat ? `<span class="muted" style="font-size:12px;display:block">${s.alamat}</span>` : ""}
+          ${s.nama_penjual ? `<span class="muted" style="font-size:12px;display:block">Penjual: ${s.nama_penjual}</span>` : ""}
+        </div>`).join("")}
       </div>`;
   }
   const html = `
@@ -964,7 +1091,15 @@ function renderMaster(){
     document.getElementById("mHarga").value
   );
   const btnS = document.getElementById("btnAddSupplier");
-  if(btnS) btnS.onclick = () => tambahSupplier(document.getElementById("mNamaSup").value, document.getElementById("mKontak").value);
+  if(btnS) btnS.onclick = () => tambahSupplier(
+    document.getElementById("mNamaSup").value,
+    document.getElementById("mAlamat").value,
+    document.getElementById("mPenjual").value,
+    document.getElementById("mKontak").value
+  );
+  document.querySelectorAll("[data-editkat]").forEach(el => el.onclick = () => openEditKategoriModal(state.kategoriList.find(k => k.id === el.dataset.editkat)));
+  document.querySelectorAll("[data-editjenis]").forEach(el => el.onclick = () => openEditJenisModal(state.jenisList.find(j => j.id === el.dataset.editjenis)));
+  document.querySelectorAll("[data-editsup]").forEach(el => el.onclick = () => openEditSupplierModal(state.supplierList.find(s => s.id === el.dataset.editsup)));
 }
 
 /* ================= RENDER: KAS ================= */
@@ -978,6 +1113,21 @@ function renderKas(){
       <p style="font-weight:600;margin:0 0 4px">Saldo kas</p>
       <p style="font-size:24px;font-weight:600;margin:0 0 8px;${state.saldoKas<0?'color:var(--danger)':''}">${fmtRupiah(state.saldoKas)}</p>
       ${state.saldoKas<0 ? '<p class="muted" style="color:var(--danger)">Saldo minus — purchasing sedang menombok sementara.</p>' : ''}
+    </div>`;
+  }
+
+  if(role === "owner"){
+    html += `
+    <div class="card">
+      <p style="font-weight:600;margin:0 0 4px">Setoran / penyesuaian kas manual</p>
+      <p class="muted" style="margin:0 0 12px">Dipakai untuk mengatur saldo awal atau koreksi manual di luar alur normal.</p>
+      <div class="row" style="gap:8px;margin-bottom:10px">
+        <button class="tab ${(window.__kasJenis||'masuk')==='masuk'?'active':''}" data-kasjenis="masuk">Masuk (tambah)</button>
+        <button class="tab ${window.__kasJenis==='keluar'?'active':''}" data-kasjenis="keluar">Keluar (kurangi)</button>
+      </div>
+      <div class="field"><input id="manualJumlah" placeholder="Nominal"></div>
+      <div class="field"><input id="manualKeterangan" placeholder="Keterangan (misal: saldo awal kas)"></div>
+      <button class="primary" style="width:100%" id="btnManualKas">Simpan</button>
     </div>`;
   }
 
@@ -1085,6 +1235,9 @@ function renderKas(){
   document.querySelectorAll("[data-sudahtransfer]").forEach(el => el.onclick = () => keputusanTransfer(el.dataset.sudahtransfer, "sudah_transfer"));
   document.querySelectorAll("[data-tunda]").forEach(el => el.onclick = () => keputusanTransfer(el.dataset.tunda, "tunda"));
   document.querySelectorAll("[data-voidtransfer]").forEach(el => el.onclick = () => voidPengajuanTransfer(el.dataset.voidtransfer));
+  document.querySelectorAll("[data-kasjenis]").forEach(el => el.onclick = () => { window.__kasJenis = el.dataset.kasjenis; render(); });
+  const btnManualKas = document.getElementById("btnManualKas");
+  if(btnManualKas) btnManualKas.onclick = submitManualKas;
 }
 
 /* ================= RENDER: LOG AKTIVITAS ================= */
