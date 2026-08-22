@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>Kas & Purchasing - Arcelio Group</title>
+<link rel="icon" type="image/jpeg" href="icon.jpg">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   :root{
@@ -84,8 +85,10 @@ let state = {
   notaDiajukan: [],
   notaDisetujui: [],
   pengajuanTransferMenunggu: [],
+  pengajuanTransferSelesai: [],
   topupPilih: [],
   transferPilih: [],
+  logList: [],
   loading: false,
   error: ""
 };
@@ -124,6 +127,15 @@ function openModal(innerHtml, onMount){
   return overlay;
 }
 
+async function catatLog(aksi, modul, detail){
+  try{ await sb.from("log_aktivitas").insert({ user_id: state.profile.id, aksi, modul, detail: detail || {} }); }
+  catch(e){ console.error("Gagal catat log:", e); }
+}
+async function loadLogAktivitas(){
+  const { data } = await sb.from("log_aktivitas").select("*, profiles(nama)").order("created_at", { ascending:false }).limit(50);
+  state.logList = data || [];
+}
+
 /* ================= AUTH ================= */
 async function login(username, password){
   state.error = "";
@@ -139,6 +151,7 @@ async function login(username, password){
   await loadNotaList();
   await loadTerimaList();
   await loadKasData();
+  if(state.profile.role === "owner") await loadLogAktivitas();
   render();
 }
 async function loadProfile(){
@@ -153,6 +166,7 @@ async function logout(){
 async function changePassword(newPass){
   const { error } = await sb.auth.updateUser({ password: newPass });
   if(error){ alert("Gagal ganti password: " + error.message); return; }
+  await catatLog("ganti_password", "akun", {});
   alert("Password berhasil diganti.");
 }
 
@@ -170,6 +184,7 @@ async function loadMasterData(){
 async function tambahKategori(nama){
   if(!nama.trim()) return;
   await sb.from("kategori_barang").insert({ nama_kategori: nama.trim(), created_by: state.profile.id });
+  await catatLog("tambah_kategori", "master_data", { nama_kategori: nama.trim() });
   await loadMasterData(); render();
 }
 async function tambahJenisBarang(nama, kategoriId, satuan, harga){
@@ -178,11 +193,13 @@ async function tambahJenisBarang(nama, kategoriId, satuan, harga){
     nama_barang: nama.trim(), kategori_id: kategoriId, satuan: satuan.trim(),
     harga_referensi: harga ? Number(harga) : null, created_by: state.profile.id
   });
+  await catatLog("tambah_jenis_barang", "master_data", { nama_barang: nama.trim() });
   await loadMasterData(); render();
 }
 async function tambahSupplier(nama, kontak){
   if(!nama.trim()) return;
   await sb.from("supplier").insert({ nama_supplier: nama.trim(), kontak: kontak.trim() || null, created_by: state.profile.id });
+  await catatLog("tambah_supplier", "master_data", { nama_supplier: nama.trim() });
   await loadMasterData(); render();
 }
 
@@ -231,6 +248,17 @@ async function loadKasData(){
     pt._notaList = notanya || [];
   }
   state.pengajuanTransferMenunggu = transferMenunggu || [];
+
+  const { data: transferSelesai } = await sb.from("pengajuan_transfer").select("*")
+    .in("status", ["sudah_transfer","tunda"]).eq("is_void", false)
+    .order("created_at", { ascending:false }).limit(20);
+  for(const pt of (transferSelesai || [])){
+    const { data: notanya } = await sb.from("tiket_nota")
+      .select("no_nota, tanggal_belanja, total_nominal, supplier(nama_supplier)")
+      .eq("pengajuan_transfer_id", pt.id);
+    pt._notaList = notanya || [];
+  }
+  state.pengajuanTransferSelesai = transferSelesai || [];
 }
 
 /* ================= PERMINTAAN BARANG ================= */
@@ -270,6 +298,7 @@ async function submitPermintaan(){
   if(err2){ alert("Gagal menyimpan barang: " + err2.message); return; }
   state.keranjang = [];
   await loadTiketList();
+  await catatLog("buat_permintaan", "permintaan", { no_tiket, jumlah_item: rows.length });
   alert("Permintaan " + no_tiket + " berhasil dibuat.");
   render();
 }
@@ -374,7 +403,8 @@ async function submitNota(){
     }
   }
   state.notaKeranjang = []; state.notaSupplierId = null; state.notaSupplierSearch = "";
-  await loadPermintaanTerbuka(); await loadNotaList(); await loadTiketList();
+  await loadPermintaanTerbuka(); await loadNotaList(); await loadTiketList(); await loadKasData();
+  await catatLog("buat_nota", "nota", { no_nota, total_nominal: totalNominal });
   alert("Nota " + no_nota + " berhasil disimpan.");
   render();
 }
@@ -383,6 +413,7 @@ async function terimaBarangItem(notaItemId){
   await sb.from("nota_item").update({
     status_penerimaan: "diterima", diterima_oleh: state.profile.id, diterima_at: new Date().toISOString()
   }).eq("id", notaItemId);
+  await catatLog("terima_barang", "permintaan", { nota_item_id: notaItemId });
   await loadTerimaList();
   render();
 }
@@ -390,6 +421,7 @@ async function terimaBarangItem(notaItemId){
 async function tandaiHilang(permintaanItemId){
   if(!confirm("Tandai permintaan ini hilang? Requester harus mengajukan ulang secara manual.")) return;
   await sb.from("permintaan_item").update({ status: "hilang" }).eq("id", permintaanItemId);
+  await catatLog("tandai_hilang", "permintaan", { permintaan_item_id: permintaanItemId });
   await loadPermintaanTerbuka(); await loadTiketList();
   render();
 }
@@ -406,9 +438,11 @@ async function submitTopup(){
   const { data: pengajuan, error } = await sb.from("pengajuan_topup")
     .insert({ no_pengajuan, purchasing_id: state.profile.id }).select().single();
   if(error){ alert("Gagal membuat pengajuan: " + error.message); return; }
+  const jumlahNotaDiajukan = state.topupPilih.length;
   await sb.from("tiket_nota").update({ status_kas: "diajukan", pengajuan_topup_id: pengajuan.id }).in("id", state.topupPilih);
   state.topupPilih = [];
   await loadKasData();
+  await catatLog("ajukan_topup", "kas", { no_pengajuan, jumlah_nota: jumlahNotaDiajukan });
   alert("Pengajuan top-up " + no_pengajuan + " dibuat.");
   render();
 }
@@ -416,11 +450,13 @@ async function approveNota(notaId){
   await sb.from("tiket_nota").update({
     status_kas: "disetujui", approved_by: state.profile.id, approved_at: new Date().toISOString()
   }).eq("id", notaId);
+  await catatLog("approve_nota", "kas", { nota_id: notaId });
   await loadKasData(); render();
 }
 async function rejectNota(notaId){
   if(!confirm("Tolak nota ini? Nota kembali ke status belum diajukan dan bisa diajukan ulang.")) return;
   await sb.from("tiket_nota").update({ status_kas: "belum_diajukan", pengajuan_topup_id: null }).eq("id", notaId);
+  await catatLog("reject_nota", "kas", { nota_id: notaId });
   await loadKasData(); render();
 }
 function toggleTransferPilih(id){
@@ -441,6 +477,7 @@ async function submitPengajuanTransfer(){
   }).in("id", state.transferPilih);
   state.transferPilih = [];
   await loadKasData();
+  await catatLog("buat_pengajuan_transfer", "kas", { no_pengajuan_transfer, total });
   alert("Pengajuan transfer " + no_pengajuan_transfer + " dibuat.");
   render();
 }
@@ -457,10 +494,12 @@ async function keputusanTransfer(pengajuanId, keputusan){
       status: "sudah_transfer", keputusan_oleh: state.profile.id, keputusan_at: new Date().toISOString()
     }).eq("id", pengajuanId);
     await sb.from("tiket_nota").update({ status_kas: "selesai" }).eq("pengajuan_transfer_id", pengajuanId);
+    await catatLog("transfer_selesai", "kas", { pengajuan_id: pengajuanId, total: pengajuan.total_nominal });
   } else {
     await sb.from("pengajuan_transfer").update({
       status: "tunda", keputusan_oleh: state.profile.id, keputusan_at: new Date().toISOString()
     }).eq("id", pengajuanId);
+    await catatLog("transfer_ditunda", "kas", { pengajuan_id: pengajuanId });
   }
   await loadKasData();
   render();
@@ -492,11 +531,112 @@ function printPengajuan(pengajuan){
   w.print();
 }
 
+/* ================= VOID ================= */
+function openVoidModal(title, onConfirm){
+  openModal(`
+    <p style="font-weight:600;margin:0 0 8px">${title}</p>
+    <p class="muted" style="margin:0 0 12px">Alasan wajib diisi. Ini tidak menghapus data, hanya menandai batal (dengan entri pembalik kalau berkaitan dengan uang).</p>
+    <div class="field"><textarea id="voidReason" rows="3"></textarea></div>
+    <button class="danger" style="width:100%" id="btnConfirmVoid">Void</button>
+  `, (overlay) => {
+    overlay.querySelector("#btnConfirmVoid").onclick = async () => {
+      const reason = overlay.querySelector("#voidReason").value.trim();
+      if(!reason){ alert("Alasan wajib diisi."); return; }
+      overlay.remove();
+      await onConfirm(reason);
+    };
+  });
+}
+
+async function voidNota(notaId){
+  openVoidModal("Void nota", async (reason) => {
+    const { data: nota } = await sb.from("tiket_nota").select("*, nota_item(*)").eq("id", notaId).single();
+    if(!nota || nota.is_void) return;
+
+    const { data: origLedger } = await sb.from("kas_ledger").select("*")
+      .eq("ref_tabel","tiket_nota").eq("ref_id",notaId).eq("jenis","keluar").eq("is_void",false).maybeSingle();
+    if(origLedger){
+      const { data: ledgerTerakhir } = await sb.from("kas_ledger").select("saldo_berjalan").order("created_at",{ascending:false}).limit(1);
+      const saldoLama = (ledgerTerakhir && ledgerTerakhir.length) ? Number(ledgerTerakhir[0].saldo_berjalan) : 0;
+      await sb.from("kas_ledger").insert({
+        jenis:"masuk", jumlah: origLedger.jumlah, saldo_berjalan: saldoLama + Number(origLedger.jumlah),
+        ref_tabel:"tiket_nota", ref_id:notaId, keterangan:"Reversal void nota " + nota.no_nota, void_ref_id: origLedger.id
+      });
+      await sb.from("kas_ledger").update({ is_void:true }).eq("id", origLedger.id);
+    }
+
+    for(const ni of (nota.nota_item || [])){
+      const { data: pi } = await sb.from("permintaan_item").select("*").eq("id", ni.permintaan_item_id).single();
+      if(pi){
+        const terpenuhiBaru = Math.max(0, Number(pi.jumlah_terpenuhi) - Number(ni.jumlah_dibeli));
+        const statusBaru = terpenuhiBaru <= 0 ? "pending" : (terpenuhiBaru >= pi.jumlah_diminta ? "selesai" : "sebagian");
+        await sb.from("permintaan_item").update({ jumlah_terpenuhi: terpenuhiBaru, status: statusBaru }).eq("id", pi.id);
+      }
+    }
+
+    await sb.from("tiket_nota").update({
+      is_void:true, void_reason:reason, void_by: state.profile.id, void_at: new Date().toISOString()
+    }).eq("id", notaId);
+
+    await catatLog("void_nota", "nota", { nota_id: notaId, no_nota: nota.no_nota, alasan: reason });
+    await loadNotaList(); await loadKasData(); await loadPermintaanTerbuka(); await loadTiketList();
+    alert("Nota " + nota.no_nota + " berhasil di-void.");
+    render();
+  });
+}
+
+async function voidPermintaanItem(piId){
+  openVoidModal("Void permintaan", async (reason) => {
+    await sb.from("permintaan_item").update({
+      is_void:true, void_reason:reason, void_by: state.profile.id, void_at: new Date().toISOString()
+    }).eq("id", piId);
+    await catatLog("void_permintaan_item", "permintaan", { permintaan_item_id: piId, alasan: reason });
+    await loadTiketList(); await loadPermintaanTerbuka();
+    alert("Permintaan berhasil di-void.");
+    render();
+  });
+}
+
+async function voidPengajuanTransfer(pengajuanId){
+  openVoidModal("Void pengajuan transfer", async (reason) => {
+    const { data: pengajuan } = await sb.from("pengajuan_transfer").select("*").eq("id", pengajuanId).single();
+    if(!pengajuan || pengajuan.is_void) return;
+
+    if(pengajuan.status === "sudah_transfer"){
+      const { data: origLedger } = await sb.from("kas_ledger").select("*")
+        .eq("ref_tabel","pengajuan_transfer").eq("ref_id",pengajuanId).eq("jenis","masuk").eq("is_void",false).maybeSingle();
+      if(origLedger){
+        const { data: ledgerTerakhir } = await sb.from("kas_ledger").select("saldo_berjalan").order("created_at",{ascending:false}).limit(1);
+        const saldoLama = (ledgerTerakhir && ledgerTerakhir.length) ? Number(ledgerTerakhir[0].saldo_berjalan) : 0;
+        await sb.from("kas_ledger").insert({
+          jenis:"keluar", jumlah: origLedger.jumlah, saldo_berjalan: saldoLama - Number(origLedger.jumlah),
+          ref_tabel:"pengajuan_transfer", ref_id:pengajuanId,
+          keterangan:"Reversal void pengajuan transfer " + pengajuan.no_pengajuan_transfer, void_ref_id: origLedger.id
+        });
+        await sb.from("kas_ledger").update({ is_void:true }).eq("id", origLedger.id);
+      }
+    }
+
+    // nota terkait kembali ke status 'disetujui' (siap dibundel ulang ke pengajuan baru)
+    await sb.from("tiket_nota").update({ status_kas:"disetujui", pengajuan_transfer_id:null }).eq("pengajuan_transfer_id", pengajuanId);
+
+    await sb.from("pengajuan_transfer").update({
+      is_void:true, void_reason:reason, void_by: state.profile.id, void_at: new Date().toISOString()
+    }).eq("id", pengajuanId);
+
+    await catatLog("void_pengajuan_transfer", "kas", { pengajuan_id: pengajuanId, alasan: reason });
+    await loadKasData(); await loadNotaList();
+    alert("Pengajuan transfer " + pengajuan.no_pengajuan_transfer + " berhasil di-void.");
+    render();
+  });
+}
+
 /* ================= RENDER: LOGIN ================= */
 function renderLogin(){
   app.innerHTML = `
     <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px">
-      <div class="card" style="width:100%;max-width:340px">
+      <div class="card" style="width:100%;max-width:340px;text-align:center">
+        <img src="icon.jpg" alt="Logo" style="width:72px;height:72px;border-radius:18px;margin:0 auto 12px;display:block">
         <p style="font-size:18px;font-weight:600;margin:0 0 4px">Kas & Purchasing</p>
         <p class="muted" style="margin:0 0 20px">Arcelio Group</p>
         <div class="field">
@@ -524,6 +664,7 @@ function renderShell(content){
     { id:"nota", label:"Nota" },
     ...(role !== "user" ? [{ id:"kas", label:"Kas" }] : []),
     { id:"master", label:"Master data" },
+    ...(role === "owner" ? [{ id:"log", label:"Log" }] : []),
   ];
   app.innerHTML = `
     <div class="topbar">
@@ -636,7 +777,8 @@ function renderPermintaan(){
             <div class="between" style="margin-top:6px">
               <span style="font-size:13px">${pi.jenis_barang?.nama_barang} · ${pi.jumlah_diminta} ${pi.jenis_barang?.satuan}</span>
               <span class="badge badge-${pi.tipe}">${pi.tipe}</span>
-              <span class="badge badge-${pi.status==='selesai'?'selesai':'pending'}">${pi.status}</span>
+              <span class="badge badge-${pi.status==='selesai'?'selesai':'pending'}">${pi.is_void ? 'void' : pi.status}</span>
+              ${(state.profile.role==='owner' && !pi.is_void && pi.status!=='selesai') ? `<button style="padding:2px 6px;font-size:11px" data-voidpi="${pi.id}">Void</button>` : ""}
             </div>
           `).join("")}
         </div>
@@ -664,6 +806,7 @@ function renderPermintaan(){
   const btnSubmit = document.getElementById("btnSubmitPermintaan");
   if(btnSubmit) btnSubmit.onclick = submitPermintaan;
   document.querySelectorAll("[data-terima]").forEach(el => el.onclick = () => terimaBarangItem(el.dataset.terima));
+  document.querySelectorAll("[data-voidpi]").forEach(el => el.onclick = () => voidPermintaanItem(el.dataset.voidpi));
 }
 
 /* ================= RENDER: NOTA ================= */
@@ -724,12 +867,13 @@ function renderNota(){
         <div style="border-bottom:0.5px solid var(--border);padding:10px 0">
           <div class="between">
             <span style="font-size:13px;font-weight:600">${n.no_nota} · ${n.supplier?.nama_supplier}</span>
-            <span class="badge badge-pending">${n.status_kas.replace(/_/g,' ')}</span>
+            <span class="badge badge-pending">${n.is_void ? 'void' : n.status_kas.replace(/_/g,' ')}</span>
           </div>
           <div class="between" style="margin-top:4px">
             <span class="muted" style="font-size:12px">${n.tanggal_belanja}</span>
             <span style="font-size:13px;font-weight:600">${fmtRupiah(n.total_nominal)}</span>
           </div>
+          ${(state.profile.role==='owner' && !n.is_void) ? `<button style="padding:3px 8px;font-size:11px;margin-top:6px" data-voidnota="${n.id}">Void nota</button>` : ""}
         </div>
       `).join("")}
     </div>`;
@@ -756,6 +900,7 @@ function renderNota(){
     const btnSubmitNota = document.getElementById("btnSubmitNota");
     if(btnSubmitNota) btnSubmitNota.onclick = submitNota;
   }
+  document.querySelectorAll("[data-voidnota]").forEach(el => el.onclick = () => voidNota(el.dataset.voidnota));
 }
 
 /* ================= RENDER: MASTER DATA ================= */
@@ -900,6 +1045,24 @@ function renderKas(){
             <button class="primary" style="flex:1" data-sudahtransfer="${p.id}">Sudah transfer</button>
             <button style="flex:1" data-tunda="${p.id}">Tunda</button>
           </div>
+          <button class="danger" style="width:100%;margin-top:8px;font-size:12px" data-voidtransfer="${p.id}">Void pengajuan ini</button>
+        </div>`).join("")}
+    </div>
+
+    <div class="card">
+      <p style="font-weight:600;margin:0 0 12px">Riwayat keputusan transfer</p>
+      ${state.pengajuanTransferSelesai.length===0 ? '<p class="muted">Belum ada.</p>' :
+        state.pengajuanTransferSelesai.map(p => `
+        <div style="border-bottom:0.5px solid var(--border);padding:10px 0">
+          <div class="between">
+            <span style="font-size:13px;font-weight:600">${p.no_pengajuan_transfer}</span>
+            <span class="badge badge-${p.status==='sudah_transfer'?'selesai':'pending'}">${p.status.replace(/_/g,' ')}</span>
+          </div>
+          <div class="between" style="margin-top:4px">
+            <span class="muted" style="font-size:12px">${p._notaList.length} nota</span>
+            <span style="font-size:13px;font-weight:600">${fmtRupiah(p.total_nominal)}</span>
+          </div>
+          <button class="danger" style="width:100%;margin-top:8px;font-size:12px" data-voidtransfer="${p.id}">Void pengajuan ini</button>
         </div>`).join("")}
     </div>`;
   }
@@ -921,6 +1084,26 @@ function renderKas(){
   document.querySelectorAll("[data-print]").forEach(el => el.onclick = () => printPengajuan(state.pengajuanTransferMenunggu.find(p => p.id === el.dataset.print)));
   document.querySelectorAll("[data-sudahtransfer]").forEach(el => el.onclick = () => keputusanTransfer(el.dataset.sudahtransfer, "sudah_transfer"));
   document.querySelectorAll("[data-tunda]").forEach(el => el.onclick = () => keputusanTransfer(el.dataset.tunda, "tunda"));
+  document.querySelectorAll("[data-voidtransfer]").forEach(el => el.onclick = () => voidPengajuanTransfer(el.dataset.voidtransfer));
+}
+
+/* ================= RENDER: LOG AKTIVITAS ================= */
+function renderLog(){
+  const html = `
+    <div class="card">
+      <p style="font-weight:600;margin:0 0 12px">Log aktivitas</p>
+      <p class="muted" style="margin:0 0 12px">Hanya Owner yang bisa melihat ini.</p>
+      ${state.logList.length === 0 ? `<p class="muted">Belum ada aktivitas tercatat.</p>` : state.logList.map(l => `
+        <div style="border-bottom:0.5px solid var(--border);padding:10px 0">
+          <div class="between">
+            <span style="font-size:13px;font-weight:600">${l.aksi.replace(/_/g,' ')}</span>
+            <span class="muted" style="font-size:11px">${new Date(l.created_at).toLocaleString('id-ID')}</span>
+          </div>
+          <span class="muted" style="font-size:12px">${l.profiles?.nama || '-'} · ${l.modul}</span>
+        </div>
+      `).join("")}
+    </div>`;
+  renderShell(html);
 }
 
 /* ================= MAIN RENDER ================= */
@@ -929,6 +1112,7 @@ function render(){
   if(state.view === "master") renderMaster();
   else if(state.view === "nota") renderNota();
   else if(state.view === "kas") renderKas();
+  else if(state.view === "log") renderLog();
   else renderPermintaan();
 }
 
@@ -944,6 +1128,7 @@ function render(){
     await loadNotaList();
     await loadTerimaList();
     await loadKasData();
+    if(state.profile.role === "owner") await loadLogAktivitas();
   }
   render();
 })();
