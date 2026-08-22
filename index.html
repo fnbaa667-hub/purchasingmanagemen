@@ -1331,11 +1331,33 @@ function renderNota(){
     if(!grupToko[key]) grupToko[key] = [];
     grupToko[key].push(pi);
   });
+  Object.keys(grupToko).forEach(key => {
+    grupToko[key].sort((a,b) => {
+      if(!a.tanggal_dibutuhkan && !b.tanggal_dibutuhkan) return 0;
+      if(!a.tanggal_dibutuhkan) return 1;
+      if(!b.tanggal_dibutuhkan) return -1;
+      return a.tanggal_dibutuhkan.localeCompare(b.tanggal_dibutuhkan);
+    });
+  });
+  const tanggalTerdekat = (list) => list.reduce((min, pi) =>
+    (pi.tanggal_dibutuhkan && (!min || pi.tanggal_dibutuhkan < min)) ? pi.tanggal_dibutuhkan : min, null);
   const namaGrupToko = Object.keys(grupToko).sort((a,b) => {
     if(a === "Belum ada riwayat pembelian") return 1;
     if(b === "Belum ada riwayat pembelian") return -1;
-    return a.localeCompare(b);
+    const ta = tanggalTerdekat(grupToko[a]), tb = tanggalTerdekat(grupToko[b]);
+    if(!ta && !tb) return a.localeCompare(b);
+    if(!ta) return 1;
+    if(!tb) return -1;
+    return ta.localeCompare(tb);
   });
+  function labelTanggalKebutuhan(tgl){
+    if(!tgl) return "";
+    const hariIni = new Date().toISOString().slice(0,10);
+    let warna = "var(--text-muted)";
+    if(tgl < hariIni) warna = "var(--danger)";
+    else if(tgl === hariIni) warna = "var(--warning)";
+    return `<span style="font-size:11px;color:${warna};flex-shrink:0">${tgl}</span>`;
+  }
 
   const formHtml = isPurchasing ? `
     <div class="card">
@@ -1354,11 +1376,12 @@ function renderNota(){
           namaGrupToko.map(toko => `
             <div style="padding:8px 12px;background:var(--bg);font-size:12px;font-weight:600;color:var(--text-sec)">🏪 ${toko}</div>
             ${grupToko[toko].map(pi => `
-            <div class="between" style="padding:10px 12px;border-bottom:0.5px solid var(--border)">
-              <span data-pilih="${pi.id}" style="cursor:pointer">${pi.jenis_barang?.nama_barang} · sisa ${(pi.jumlah_diminta - pi.jumlah_terpenuhi)} ${pi.jenis_barang?.satuan}
+            <div class="itemcard-row" style="border-top:none;border-bottom:0.5px solid var(--border);flex-wrap:wrap">
+              <span data-pilih="${pi.id}" class="item-name" style="cursor:pointer;flex-basis:100%">${pi.jenis_barang?.nama_barang} · sisa ${(pi.jumlah_diminta - pi.jumlah_terpenuhi)} ${pi.jenis_barang?.satuan}
                 <span class="badge badge-${pi.tipe}">${pi.tipe}</span>
               </span>
-              ${pi.tipe === "wajib" ? `<button style="padding:3px 6px;font-size:11px" data-hilang="${pi.id}">Tandai hilang</button>` : `<span class="muted" style="font-size:11px">${pi.tiket_permintaan?.profiles?.nama || ''}</span>`}
+              ${labelTanggalKebutuhan(pi.tanggal_dibutuhkan)}
+              ${pi.tipe === "wajib" ? `<button style="padding:3px 6px;font-size:11px;margin-left:auto" data-hilang="${pi.id}">Tandai hilang</button>` : `<span class="muted" style="font-size:11px;margin-left:auto">${pi.tiket_permintaan?.profiles?.nama || ''}</span>`}
             </div>
           `).join("")}
         `).join("")}
