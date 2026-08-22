@@ -851,6 +851,34 @@ function openTambahBarangBaruModal(namaAwal, onCreated){
   });
 }
 
+function openTambahSupplierBaruModal(namaAwal, onCreated){
+  openModal(`
+    <p style="font-weight:600;margin:0 0 12px">Tambah supplier baru</p>
+    <div class="field"><label class="field-label">Nama toko/supplier</label><input id="qsNama" value="${(namaAwal||'').replace(/"/g,'&quot;')}"></div>
+    <div class="field"><label class="field-label">Alamat (opsional)</label><input id="qsAlamat"></div>
+    <div class="field"><label class="field-label">Nama penjual (opsional)</label><input id="qsPenjual"></div>
+    <div class="field"><label class="field-label">Kontak (opsional)</label><input id="qsKontak"></div>
+    <button class="primary" style="width:100%" id="btnQsSimpan">Simpan & pakai supplier ini</button>
+  `, (overlay) => {
+    overlay.querySelector("#btnQsSimpan").onclick = async () => {
+      const nama = overlay.querySelector("#qsNama").value.trim();
+      if(!nama){ alert("Nama toko/supplier wajib diisi."); return; }
+      const { data: sup, error } = await sb.from("supplier").insert({
+        nama_supplier: nama,
+        alamat: overlay.querySelector("#qsAlamat").value.trim() || null,
+        nama_penjual: overlay.querySelector("#qsPenjual").value.trim() || null,
+        kontak: overlay.querySelector("#qsKontak").value.trim() || null,
+        created_by: state.profile.id
+      }).select().single();
+      if(error){ alert("Gagal menambah supplier: " + error.message); return; }
+      await catatLog("tambah_supplier", "master_data", { nama_supplier: nama, dari_layar: "quick_add" });
+      await loadMasterData();
+      overlay.remove();
+      onCreated(sup);
+    };
+  });
+}
+
 /* ================= RENDER: LOGIN ================= */
 function renderLogin(){
   app.innerHTML = `
@@ -1051,6 +1079,7 @@ function renderNota(){
       ${supResults.length ? `<div class="sugglist" id="supBox">
         ${supResults.map(s => `<div class="suggitem" data-id="${s.id}">${s.nama_supplier}</div>`).join("")}
       </div>` : ""}
+      ${supKw && !state.notaSupplierId && supResults.length===0 ? `<button style="width:100%;margin-top:8px;font-size:13px" id="btnTambahSupplierCepat">+ Tambah "${state.notaSupplierSearch}" sebagai supplier baru</button>` : ""}
 
       <p style="font-weight:600;margin:16px 0 8px;font-size:14px">Pilih dari permintaan menunggu</p>
       <div class="sugglist" style="max-height:180px">
@@ -1132,6 +1161,10 @@ function renderNota(){
     }
     document.querySelectorAll("#supBox .suggitem").forEach(el => {
       el.onclick = () => pilihSupplierNota(state.supplierList.find(s => s.id === el.dataset.id));
+    });
+    const btnTambahSupplierCepat = document.getElementById("btnTambahSupplierCepat");
+    if(btnTambahSupplierCepat) btnTambahSupplierCepat.onclick = () => openTambahSupplierBaruModal(state.notaSupplierSearch, (sup) => {
+      pilihSupplierNota(sup);
     });
     document.querySelectorAll("[data-pilih]").forEach(el => {
       el.onclick = () => tambahKeNotaKeranjang(state.permintaanTerbuka.find(p => p.id === el.dataset.pilih));
