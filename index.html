@@ -923,7 +923,7 @@ function renderPermintaan(){
 
 /* ================= RENDER: NOTA ================= */
 function renderNota(){
-  const isPurchasing = state.profile.role === "purchasing";
+  const isPurchasing = ["purchasing","owner"].includes(state.profile.role);
   const supKw = state.notaSupplierSearch.trim().toLowerCase();
   const supResults = (supKw && !state.notaSupplierId) ? state.supplierList.filter(s => s.nama_supplier.toLowerCase().includes(supKw)).slice(0,6) : [];
 
@@ -1131,7 +1131,7 @@ function renderKas(){
     </div>`;
   }
 
-  if(role === "purchasing"){
+  if(["purchasing","owner"].includes(role)){
     html += `
     <div class="card">
       <p style="font-weight:600;margin:0 0 12px">Ajukan top-up</p>
