@@ -7,6 +7,7 @@
 <link rel="icon" type="image/jpeg" href="icon.jpg">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2/dist/tabler-icons.min.css">
 <meta name="theme-color" content="#1d6fa5">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
@@ -38,6 +39,14 @@
   .badge-pending{background:var(--warning-bg);color:var(--warning)}
   .badge-selesai{background:var(--success-bg);color:var(--success)}
   .badge-luar{background:var(--warning-bg);color:var(--warning)}
+  .itemcard{background:var(--card);border:0.5px solid var(--border);border-radius:12px;margin-bottom:10px;overflow:hidden}
+  .itemcard-header{display:flex;justify-content:space-between;align-items:center;padding:9px 14px;background:var(--bg)}
+  .itemcard-row{display:flex;align-items:center;gap:8px;padding:8px 14px;border-top:0.5px solid var(--border);min-width:0}
+  .item-name{font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tipe-badge{width:18px;height:18px;border-radius:5px;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+  .tipe-badge.wajib{background:var(--danger-bg);color:var(--danger)}
+  .tipe-badge.biasa{background:var(--accent-bg);color:var(--accent)}
+  .status-icon{flex-shrink:0;font-size:17px}
   .topwrap{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:0.5px solid var(--border)}
   .topbar{padding:12px 16px;display:flex;justify-content:space-between;align-items:center}
   .navbar{display:flex;overflow-x:auto;border-top:0.5px solid var(--border);padding:6px 8px;gap:4px}
@@ -1171,32 +1180,33 @@ function renderPermintaan(){
   const terimaHtml = state.terimaList.length ? `
     <div class="card">
       <p style="font-weight:600;margin:0 0 12px">Perlu saya terima</p>
-      ${state.terimaList.map(ni => `
-        <div style="border-bottom:0.5px solid var(--border);padding:10px 0">
-          <div class="between">
-            <span style="font-size:14px">${ni.jenis_barang?.nama_barang} · ${ni.jumlah_dibeli} ${ni.jenis_barang?.satuan}</span>
-            <button style="padding:6px 10px;font-size:12px" data-terima="${ni.id}">Terima</button>
-          </div>
-          <span class="muted" style="font-size:12px">Nota ${ni.tiket_nota?.no_nota} · ${ni.tiket_nota?.supplier?.nama_supplier}</span>
-          ${ni.is_substitusi ? `<div class="badge badge-pending" style="margin-top:6px">Barang pengganti dari yang diminta</div>` : ""}
+      <div class="itemcard">
+        ${state.terimaList.map(ni => `
+        <div class="itemcard-row">
+          <span class="item-name">${ni.jenis_barang?.nama_barang} · ${ni.jumlah_dibeli} ${ni.jenis_barang?.satuan}
+            <span class="muted" style="font-size:11px"> · ${ni.tiket_nota?.no_nota}</span>
+            ${ni.is_substitusi ? '<span class="badge badge-pending" style="margin-left:4px">pengganti</span>' : ''}
+          </span>
+          <button style="padding:6px 10px;font-size:12px;flex-shrink:0" data-terima="${ni.id}">Terima</button>
         </div>
       `).join("")}
+      </div>
     </div>` : "";
 
   const terimaLuarHtml = state.terimaLuarList.length ? `
     <div class="card">
       <p style="font-weight:600;margin:0 0 4px">Barang di luar permintaan — menunggu diterima</p>
-      <p class="muted" style="margin:0 0 12px">Barang ini dibeli purchasing tanpa permintaan resmi. Siapapun yang menerima fisik barangnya bisa konfirmasi di sini.</p>
-      ${state.terimaLuarList.map(ni => `
-        <div style="border-bottom:0.5px solid var(--border);padding:10px 0">
-          <div class="between">
-            <span style="font-size:14px">${ni.jenis_barang?.nama_barang} · ${ni.jumlah_dibeli} ${ni.jenis_barang?.satuan}</span>
-            <button style="padding:6px 10px;font-size:12px" data-terimaluar="${ni.id}">Terima</button>
-          </div>
-          <span class="muted" style="font-size:12px">Nota ${ni.tiket_nota?.no_nota} · ${ni.tiket_nota?.supplier?.nama_supplier}</span>
-          <div class="badge badge-luar" style="margin-top:6px">Di luar permintaan</div>
+      <p class="muted" style="margin:0 0 12px">Dibeli purchasing tanpa permintaan resmi. Siapapun yang menerima fisiknya bisa konfirmasi.</p>
+      <div class="itemcard">
+        ${state.terimaLuarList.map(ni => `
+        <div class="itemcard-row">
+          <span class="item-name">${ni.jenis_barang?.nama_barang} · ${ni.jumlah_dibeli} ${ni.jenis_barang?.satuan}
+            <span class="muted" style="font-size:11px"> · ${ni.tiket_nota?.no_nota}</span>
+          </span>
+          <button style="padding:6px 10px;font-size:12px;flex-shrink:0" data-terimaluar="${ni.id}">Terima</button>
         </div>
       `).join("")}
+      </div>
     </div>` : "";
 
   const html = `
@@ -1253,22 +1263,25 @@ function renderPermintaan(){
     <div class="card">
       <p style="font-weight:600;margin:0 0 12px">Riwayat permintaan</p>
       ${state.tiketList.length===0 ? `<p class="muted">Belum ada permintaan.</p>` : state.tiketList.map(t => `
-        <div style="border-bottom:0.5px solid var(--border);padding:10px 0">
-          <div class="between">
-            <span style="font-size:13px;font-weight:600">${t.no_tiket}</span>
+        <div class="itemcard">
+          <div class="itemcard-header">
+            <span style="font-weight:600;font-size:13px">${t.no_tiket}</span>
             <span class="muted" style="font-size:12px">${t.profiles?.nama || ''}</span>
           </div>
-          ${(t.permintaan_item||[]).map(pi => `
-            <div style="margin-top:8px;padding-top:8px;border-top:0.5px solid var(--border)">
-              <p style="font-size:13px;margin:0 0 2px">${pi.jenis_barang?.nama_barang} · ${pi.jumlah_diminta} ${pi.jenis_barang?.satuan}</p>
-              ${pi.tanggal_dibutuhkan ? `<p class="muted" style="font-size:11px;margin:0 0 6px">Dibutuhkan: ${pi.tanggal_dibutuhkan}</p>` : ""}
-              <div class="row" style="gap:6px;flex-wrap:wrap;justify-content:flex-start">
-                <span class="badge badge-${pi.tipe}">${pi.tipe}</span>
-                <span class="badge badge-${pi.is_void ? 'luar' : (pi.status==='selesai' ? 'selesai' : (pi.status==='tidak_disediakan' ? 'luar' : 'pending'))}">${pi.is_void ? 'void' : pi.status.replace(/_/g,' ')}</span>
-                ${(state.profile.role==='owner' && !pi.is_void && pi.status!=='selesai') ? `<button style="padding:2px 8px;font-size:11px" data-voidpi="${pi.id}">Void</button>` : ""}
-              </div>
-            </div>
-          `).join("")}
+          ${(t.permintaan_item||[]).map(pi => {
+            const isSelesai = !pi.is_void && pi.status === "selesai";
+            const label = pi.is_void ? "void" : pi.status.replace(/_/g,' ');
+            const badgeKelas = pi.is_void || pi.status==='tidak_disediakan' ? 'luar' : 'pending';
+            return `
+            <div class="itemcard-row">
+              <span class="tipe-badge ${pi.tipe}">${pi.tipe==='wajib'?'W':'B'}</span>
+              <span class="item-name">${pi.jenis_barang?.nama_barang} · ${pi.jumlah_diminta} ${pi.jenis_barang?.satuan}${pi.tanggal_dibutuhkan ? ' · '+pi.tanggal_dibutuhkan : ''}</span>
+              ${isSelesai
+                ? `<i class="ti ti-check status-icon" style="color:var(--success)" aria-label="selesai"></i>`
+                : `<span class="badge badge-${badgeKelas}" style="flex-shrink:0">${label}</span>`}
+              ${(state.profile.role==='owner' && !pi.is_void && pi.status!=='selesai') ? `<button style="padding:2px 6px;font-size:11px;flex-shrink:0" data-voidpi="${pi.id}">Void</button>` : ""}
+            </div>`;
+          }).join("")}
         </div>
       `).join("")}
     </div>
@@ -1387,26 +1400,26 @@ function renderNota(){
     <div class="card">
       <p style="font-weight:600;margin:0 0 12px">Riwayat nota</p>
       ${state.notaList.length === 0 ? `<p class="muted">Belum ada nota.</p>` : state.notaList.map(n => `
-        <div style="border-bottom:0.5px solid var(--border);padding:10px 0">
-          <div class="between">
-            <span style="font-size:13px;font-weight:600">${n.no_nota} · ${n.supplier?.nama_supplier}</span>
+        <div class="itemcard">
+          <div class="itemcard-header">
+            <span style="font-weight:600;font-size:13px">${n.no_nota} · ${n.supplier?.nama_supplier}</span>
             <span class="badge badge-pending">${n.is_void ? 'void' : n.status_kas.replace(/_/g,' ')}</span>
           </div>
-          <div class="between" style="margin-top:4px">
+          <div class="itemcard-row" style="justify-content:space-between">
             <span class="muted" style="font-size:12px">${n.tanggal_belanja}</span>
-            <span style="font-size:13px;font-weight:600">${fmtRupiah(n.total_nominal)}</span>
+            <span style="font-size:13px;font-weight:600;flex-shrink:0">${fmtRupiah(n.total_nominal)}</span>
           </div>
           ${(n.nota_item||[]).map(ni => `
-            <div style="margin-top:4px;font-size:12px" class="muted">
-              <span>${ni.jenis_barang?.nama_barang} · ${ni.jumlah_dibeli} ${ni.jenis_barang?.satuan}</span>
-              ${ni.is_substitusi ? '<span class="badge badge-pending" style="margin-left:6px">pengganti</span>' : ''}
-              ${!ni.permintaan_item_id ? '<span class="badge badge-luar" style="margin-left:6px">di luar permintaan</span>' : ''}
+            <div class="itemcard-row">
+              <span class="item-name">${ni.jenis_barang?.nama_barang} · ${ni.jumlah_dibeli} ${ni.jenis_barang?.satuan}</span>
+              ${ni.is_substitusi ? '<span class="badge badge-pending" style="flex-shrink:0">pengganti</span>' : ''}
+              ${!ni.permintaan_item_id ? '<span class="badge badge-luar" style="flex-shrink:0">luar</span>' : ''}
             </div>
           `).join("")}
           ${state.profile.role==='owner' && !n.is_void ? (
             n.status_kas === 'belum_diajukan'
-              ? `<button style="padding:3px 8px;font-size:11px;margin-top:6px" data-voidnota="${n.id}">Void nota</button>`
-              : `<p class="muted" style="font-size:11px;margin:6px 0 0">Void hanya bisa saat status belum_diajukan — tolak/batalkan approval/void transfer dulu sesuai urutannya.</p>`
+              ? `<div class="itemcard-row"><button style="padding:3px 8px;font-size:11px" data-voidnota="${n.id}">Void nota</button></div>`
+              : `<div class="itemcard-row"><p class="muted" style="font-size:11px;margin:0">Void: tolak/batalkan approval/void transfer dulu sesuai urutannya.</p></div>`
           ) : ""}
         </div>
       `).join("")}
@@ -1583,17 +1596,18 @@ function renderKas(){
     <div class="card">
       <p style="font-weight:600;margin:0 0 4px">Ajukan top-up</p>
       <p class="muted" style="margin:0 0 12px">Hanya nota yang semua barangnya sudah dikonfirmasi diterima yang bisa diajukan.</p>
-      ${state.notaBelumDiajukan.length===0 ? '<p class="muted">Tidak ada nota yang siap diajukan.</p>' :
-        state.notaBelumDiajukan.map(n => siapDiajukan(n) ? `
-        <label class="row" style="padding:8px 0;border-bottom:0.5px solid var(--border)">
-          <input type="checkbox" style="width:auto" data-topup="${n.id}" ${state.topupPilih.includes(n.id)?'checked':''}>
-          <span style="flex:1;font-size:13px">${n.no_nota} · ${n.supplier?.nama_supplier}</span>
-          <span style="font-size:13px;font-weight:600">${fmtRupiah(n.total_nominal)}</span>
+      ${state.notaBelumDiajukan.length===0 ? '<p class="muted">Tidak ada nota yang siap diajukan.</p>' : `<div class="itemcard">
+        ${state.notaBelumDiajukan.map(n => siapDiajukan(n) ? `
+        <label class="itemcard-row">
+          <input type="checkbox" style="width:auto;flex-shrink:0" data-topup="${n.id}" ${state.topupPilih.includes(n.id)?'checked':''}>
+          <span class="item-name">${n.no_nota} · ${n.supplier?.nama_supplier}</span>
+          <span style="font-size:13px;font-weight:600;flex-shrink:0">${fmtRupiah(n.total_nominal)}</span>
         </label>` : `
-        <div class="row" style="padding:8px 0;border-bottom:0.5px solid var(--border);opacity:0.6">
-          <span style="flex:1;font-size:13px">${n.no_nota} · ${n.supplier?.nama_supplier}</span>
-          <span class="badge badge-pending">${itemDiterima(n)}/${totalItemBelum(n)} diterima</span>
+        <div class="itemcard-row" style="opacity:0.6">
+          <span class="item-name">${n.no_nota} · ${n.supplier?.nama_supplier}</span>
+          <span class="badge badge-pending" style="flex-shrink:0">${itemDiterima(n)}/${totalItemBelum(n)} diterima</span>
         </div>`).join("")}
+      </div>`}
       ${state.notaBelumDiajukan.some(siapDiajukan) ? `<button class="primary" style="width:100%;margin-top:12px" id="btnSubmitTopup">Ajukan top-up (${state.topupPilih.length} nota)</button>` : ""}
     </div>`;
   }
@@ -1604,12 +1618,12 @@ function renderKas(){
       <p style="font-weight:600;margin:0 0 12px">Approval top-up (per nota)</p>
       ${state.notaDiajukan.length===0 ? '<p class="muted">Tidak ada nota menunggu approval.</p>' :
         state.notaDiajukan.map(n => `
-        <div style="border-bottom:0.5px solid var(--border);padding:10px 0">
-          <div class="between">
-            <span style="font-size:13px">${n.no_nota} · ${n.supplier?.nama_supplier}</span>
-            <span style="font-size:13px;font-weight:600">${fmtRupiah(n.total_nominal)}</span>
+        <div class="itemcard">
+          <div class="itemcard-header">
+            <span class="item-name">${n.no_nota} · ${n.supplier?.nama_supplier}</span>
+            <span style="font-size:13px;font-weight:600;flex-shrink:0">${fmtRupiah(n.total_nominal)}</span>
           </div>
-          <div class="row" style="margin-top:8px;gap:8px">
+          <div class="itemcard-row" style="gap:8px">
             <button class="primary" style="flex:1" data-approve="${n.id}">Setujui</button>
             <button class="danger" style="flex:1" data-reject="${n.id}">Tolak</button>
           </div>
@@ -1620,13 +1634,13 @@ function renderKas(){
       <p style="font-weight:600;margin:0 0 12px">Buat pengajuan transfer</p>
       ${state.notaDisetujui.length===0 ? '<p class="muted">Belum ada nota siap ditransfer.</p>' :
         state.notaDisetujui.map(n => `
-        <div style="padding:8px 0;border-bottom:0.5px solid var(--border)">
-          <label class="row">
-            <input type="checkbox" style="width:auto" data-transfer="${n.id}" ${state.transferPilih.includes(n.id)?'checked':''}>
-            <span style="flex:1;font-size:13px">${n.no_nota} · ${n.supplier?.nama_supplier}</span>
-            <span style="font-size:13px;font-weight:600">${fmtRupiah(n.total_nominal)}</span>
+        <div class="itemcard">
+          <label class="itemcard-row" style="border-top:none">
+            <input type="checkbox" style="width:auto;flex-shrink:0" data-transfer="${n.id}" ${state.transferPilih.includes(n.id)?'checked':''}>
+            <span class="item-name">${n.no_nota} · ${n.supplier?.nama_supplier}</span>
+            <span style="font-size:13px;font-weight:600;flex-shrink:0">${fmtRupiah(n.total_nominal)}</span>
           </label>
-          ${role==='owner' ? `<button style="font-size:11px;padding:3px 8px;margin-top:4px" data-batalapproval="${n.id}">Batalkan approval (untuk void)</button>` : ""}
+          ${role==='owner' ? `<div class="itemcard-row"><button style="font-size:11px;padding:3px 8px" data-batalapproval="${n.id}">Batalkan approval (untuk void)</button></div>` : ""}
         </div>`).join("")}
       ${state.notaDisetujui.length ? `<button class="primary" style="width:100%;margin-top:12px" id="btnSubmitTransfer">Buat pengajuan transfer (${state.transferPilih.length} nota)</button>` : ""}
     </div>`;
@@ -1638,19 +1652,23 @@ function renderKas(){
       <p style="font-weight:600;margin:0 0 12px">Pengajuan transfer menunggu keputusan</p>
       ${state.pengajuanTransferMenunggu.length===0 ? '<p class="muted">Tidak ada pengajuan menunggu.</p>' :
         state.pengajuanTransferMenunggu.map(p => `
-        <div style="border-bottom:0.5px solid var(--border);padding:12px 0">
-          <p style="font-weight:600;font-size:13px;margin:0 0 6px">${p.no_pengajuan_transfer}</p>
-          ${p._notaList.map(n => `<div class="between"><span class="muted" style="font-size:12px">${n.tanggal_belanja} · ${n.supplier?.nama_supplier}</span><span style="font-size:12px">${fmtRupiah(n.total_nominal)}</span></div>`).join("")}
-          <div class="between" style="margin-top:6px;font-weight:600"><span>Total</span><span>${fmtRupiah(p.total_nominal)}</span></div>
-          <div class="row" style="margin-top:8px;gap:6px">
+        <div class="itemcard">
+          <div class="itemcard-header"><span style="font-weight:600;font-size:13px">${p.no_pengajuan_transfer}</span></div>
+          ${p._notaList.map(n => `
+          <div class="itemcard-row">
+            <span class="item-name muted">${n.tanggal_belanja} · ${n.supplier?.nama_supplier}</span>
+            <span style="font-size:12px;flex-shrink:0">${fmtRupiah(n.total_nominal)}</span>
+          </div>`).join("")}
+          <div class="itemcard-row" style="font-weight:600"><span>Total</span><span style="margin-left:auto">${fmtRupiah(p.total_nominal)}</span></div>
+          <div class="itemcard-row" style="gap:6px">
             <button style="flex:1;font-size:12px" data-wa="${p.id}">Salin WA</button>
             <button style="flex:1;font-size:12px" data-print="${p.id}">Cetak</button>
           </div>
-          <div class="row" style="margin-top:8px;gap:8px">
+          <div class="itemcard-row" style="gap:8px">
             <button class="primary" style="flex:1" data-sudahtransfer="${p.id}">Sudah transfer</button>
             <button style="flex:1" data-tunda="${p.id}">Tunda</button>
           </div>
-          ${role === "owner" ? `<button class="danger" style="width:100%;margin-top:8px;font-size:12px" data-voidtransfer="${p.id}">Void pengajuan ini</button>` : ""}
+          ${role === "owner" ? `<div class="itemcard-row"><button class="danger" style="width:100%;font-size:12px" data-voidtransfer="${p.id}">Void pengajuan ini</button></div>` : ""}
         </div>`).join("")}
     </div>
 
@@ -1658,21 +1676,21 @@ function renderKas(){
       <p style="font-weight:600;margin:0 0 12px">Riwayat keputusan transfer</p>
       ${state.pengajuanTransferSelesai.length===0 ? '<p class="muted">Belum ada.</p>' :
         state.pengajuanTransferSelesai.map(p => `
-        <div style="border-bottom:0.5px solid var(--border);padding:10px 0">
-          <div class="between">
-            <span style="font-size:13px;font-weight:600">${p.no_pengajuan_transfer}</span>
-            <span class="badge badge-${p.status==='sudah_transfer'?'selesai':'pending'}">${p.status.replace(/_/g,' ')}</span>
+        <div class="itemcard">
+          <div class="itemcard-header">
+            <span class="item-name" style="font-weight:600">${p.no_pengajuan_transfer}</span>
+            <span class="badge badge-${p.status==='sudah_transfer'?'selesai':'pending'}" style="flex-shrink:0">${p.status.replace(/_/g,' ')}</span>
           </div>
-          <div class="between" style="margin-top:4px">
+          <div class="itemcard-row">
             <span class="muted" style="font-size:12px">${p._notaList.length} nota</span>
-            <span style="font-size:13px;font-weight:600">${fmtRupiah(p.total_nominal)}</span>
+            <span style="font-size:13px;font-weight:600;margin-left:auto">${fmtRupiah(p.total_nominal)}</span>
           </div>
           ${p.jumlah_transfer_aktual != null && Number(p.jumlah_transfer_aktual) !== Number(p.total_nominal) ? `
-          <div class="between" style="margin-top:2px">
+          <div class="itemcard-row">
             <span class="muted" style="font-size:12px">Nominal aktual ditransfer</span>
-            <span class="muted" style="font-size:12px">${fmtRupiah(p.jumlah_transfer_aktual)}</span>
+            <span class="muted" style="font-size:12px;margin-left:auto">${fmtRupiah(p.jumlah_transfer_aktual)}</span>
           </div>` : ""}
-          ${role === "owner" ? `<button class="danger" style="width:100%;margin-top:8px;font-size:12px" data-voidtransfer="${p.id}">Void pengajuan ini</button>` : ""}
+          ${role === "owner" ? `<div class="itemcard-row"><button class="danger" style="width:100%;font-size:12px" data-voidtransfer="${p.id}">Void pengajuan ini</button></div>` : ""}
         </div>`).join("")}
     </div>`;
   }
@@ -1707,15 +1725,15 @@ function renderLog(){
     <div class="card">
       <p style="font-weight:600;margin:0 0 12px">Log aktivitas</p>
       <p class="muted" style="margin:0 0 12px">Hanya Owner yang bisa melihat ini.</p>
-      ${state.logList.length === 0 ? `<p class="muted">Belum ada aktivitas tercatat.</p>` : state.logList.map(l => `
-        <div style="border-bottom:0.5px solid var(--border);padding:10px 0">
-          <div class="between">
-            <span style="font-size:13px;font-weight:600">${l.aksi.replace(/_/g,' ')}</span>
-            <span class="muted" style="font-size:11px">${new Date(l.created_at).toLocaleString('id-ID')}</span>
-          </div>
-          <span class="muted" style="font-size:12px">${l.profiles?.nama || '-'} · ${l.modul}</span>
+      ${state.logList.length === 0 ? `<p class="muted">Belum ada aktivitas tercatat.</p>` : `<div class="itemcard">
+        ${state.logList.map(l => `
+        <div class="itemcard-row" style="flex-wrap:wrap">
+          <span class="item-name" style="font-weight:600;flex-basis:100%">${l.aksi.replace(/_/g,' ')}</span>
+          <span class="muted" style="font-size:11px">${l.profiles?.nama || '-'} · ${l.modul}</span>
+          <span class="muted" style="font-size:11px;margin-left:auto;flex-shrink:0">${new Date(l.created_at).toLocaleString('id-ID')}</span>
         </div>
       `).join("")}
+      </div>`}
     </div>`;
   renderShell(html);
 }
