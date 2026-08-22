@@ -98,6 +98,8 @@ let state = {
   laporanRows: [],
   laporanTabQty: "barang",
   laporanTabBelanja: "supplier",
+  laporanNotaKategori: "",
+  laporanNotaSupplier: "",
   loading: false,
   error: ""
 };
@@ -956,7 +958,7 @@ async function loadLaporan(){
     state.laporanTo = now.toISOString().slice(0,10);
   }
   const { data: notaList } = await sb.from("tiket_nota")
-    .select("id, supplier(nama_supplier)")
+    .select("id, tanggal_belanja, supplier_id, supplier(nama_supplier), pengajuan_transfer(status, keputusan_at)")
     .eq("is_void", false)
     .gte("tanggal_belanja", state.laporanFrom)
     .lte("tanggal_belanja", state.laporanTo);
@@ -967,17 +969,26 @@ async function loadLaporan(){
   if(notaIds.length === 0){ state.laporanRows = []; return; }
 
   const { data: items } = await sb.from("nota_item")
-    .select("jumlah_dibeli, subtotal, tiket_nota_id, jenis_barang(nama_barang, satuan, kategori_barang(nama_kategori))")
+    .select("jumlah_dibeli, harga_satuan, subtotal, tiket_nota_id, jenis_barang(nama_barang, satuan, kategori_id, kategori_barang(nama_kategori))")
     .in("tiket_nota_id", notaIds);
 
-  state.laporanRows = (items || []).map(it => ({
-    nama_barang: it.jenis_barang?.nama_barang || "-",
-    satuan: it.jenis_barang?.satuan || "",
-    kategori: it.jenis_barang?.kategori_barang?.nama_kategori || "-",
-    supplier: notaMap[it.tiket_nota_id]?.supplier?.nama_supplier || "-",
-    jumlah: Number(it.jumlah_dibeli) || 0,
-    subtotal: Number(it.subtotal) || 0
-  }));
+  state.laporanRows = (items || []).map(it => {
+    const nota = notaMap[it.tiket_nota_id];
+    const transferSelesai = nota?.pengajuan_transfer?.status === "sudah_transfer";
+    return {
+      tanggal: nota?.tanggal_belanja || "",
+      nama_barang: it.jenis_barang?.nama_barang || "-",
+      satuan: it.jenis_barang?.satuan || "",
+      kategori: it.jenis_barang?.kategori_barang?.nama_kategori || "-",
+      kategori_id: it.jenis_barang?.kategori_id || null,
+      supplier: nota?.supplier?.nama_supplier || "-",
+      supplier_id: nota?.supplier_id || null,
+      jumlah: Number(it.jumlah_dibeli) || 0,
+      harga_satuan: Number(it.harga_satuan) || 0,
+      subtotal: Number(it.subtotal) || 0,
+      tanggal_diganti: transferSelesai ? (nota.pengajuan_transfer.keputusan_at || "").slice(0,10) : ""
+    };
+  });
 }
 
 function groupSum(rows, keyFn, valFn){
@@ -989,6 +1000,33 @@ function groupSum(rows, keyFn, valFn){
   return Array.from(map.entries()).sort((a,b) => b[1] - a[1]);
 }
 
+function filterLaporanNota(){
+  return state.laporanRows.filter(r =>
+    (!state.laporanNotaKategori || r.kategori_id === state.laporanNotaKategori) &&
+    (!state.laporanNotaSupplier || r.supplier === state.laporanNotaSupplier)
+  );
+}
+function exportLaporanNotaCsv(){
+  const rows = filterLaporanNota();
+  if(rows.length === 0){ alert("Tidak ada data untuk diekspor."); return; }
+  const header = ["Tanggal","Supplier","Kategori","Barang","Jumlah","Satuan","Harga Satuan","Harga Total","Tanggal Diganti"];
+  const escapeCsv = (v) => `"${String(v ?? "").replace(/"/g,'""')}"`;
+  const lines = [header.map(escapeCsv).join(",")];
+  rows.forEach(r => {
+    lines.push([
+      r.tanggal, r.supplier, r.kategori, r.nama_barang, r.jumlah, r.satuan,
+      r.harga_satuan, r.subtotal, r.tanggal_diganti || "Belum diganti"
+    ].map(escapeCsv).join(","));
+  });
+  const csv = "\uFEFF" + lines.join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "riwayat-nota-" + state.laporanFrom + "_sd_" + state.laporanTo + ".csv";
+  a.click();
+  URL.revokeObjectURL(url);
+}
 function setPresetLaporan(preset){
   const now = new Date();
   if(preset === "hari"){
@@ -1172,11 +1210,13 @@ function renderPermintaan(){
             <span class="muted" style="font-size:12px">${t.profiles?.nama || ''}</span>
           </div>
           ${(t.permintaan_item||[]).map(pi => `
-            <div class="between" style="margin-top:6px">
-              <span style="font-size:13px">${pi.jenis_barang?.nama_barang} · ${pi.jumlah_diminta} ${pi.jenis_barang?.satuan}</span>
-              <span class="badge badge-${pi.tipe}">${pi.tipe}</span>
-              <span class="badge badge-${pi.status==='selesai'?'selesai':'pending'}">${pi.is_void ? 'void' : pi.status}</span>
-              ${(state.profile.role==='owner' && !pi.is_void && pi.status!=='selesai') ? `<button style="padding:2px 6px;font-size:11px" data-voidpi="${pi.id}">Void</button>` : ""}
+            <div style="margin-top:8px;padding-top:8px;border-top:0.5px solid var(--border)">
+              <p style="font-size:13px;margin:0 0 6px">${pi.jenis_barang?.nama_barang} · ${pi.jumlah_diminta} ${pi.jenis_barang?.satuan}</p>
+              <div class="row" style="gap:6px;flex-wrap:wrap;justify-content:flex-start">
+                <span class="badge badge-${pi.tipe}">${pi.tipe}</span>
+                <span class="badge badge-${pi.is_void ? 'luar' : (pi.status==='selesai' ? 'selesai' : 'pending')}">${pi.is_void ? 'void' : pi.status}</span>
+                ${(state.profile.role==='owner' && !pi.is_void && pi.status!=='selesai') ? `<button style="padding:2px 8px;font-size:11px" data-voidpi="${pi.id}">Void</button>` : ""}
+              </div>
             </div>
           `).join("")}
         </div>
@@ -1307,9 +1347,9 @@ function renderNota(){
           </div>
           ${(n.nota_item||[]).map(ni => `
             <div style="margin-top:4px;font-size:12px" class="muted">
-              ${ni.jenis_barang?.nama_barang} · ${ni.jumlah_dibeli} ${ni.jenis_barang?.satuan}
-              ${ni.is_substitusi ? '<span class="badge badge-pending">pengganti</span>' : ''}
-              ${!ni.permintaan_item_id ? '<span class="badge badge-luar">di luar permintaan</span>' : ''}
+              <span>${ni.jenis_barang?.nama_barang} · ${ni.jumlah_dibeli} ${ni.jenis_barang?.satuan}</span>
+              ${ni.is_substitusi ? '<span class="badge badge-pending" style="margin-left:6px">pengganti</span>' : ''}
+              ${!ni.permintaan_item_id ? '<span class="badge badge-luar" style="margin-left:6px">di luar permintaan</span>' : ''}
             </div>
           `).join("")}
           ${state.profile.role==='owner' && !n.is_void ? (
@@ -1691,6 +1731,41 @@ function renderLaporan(){
         <span>Total periode ini</span>
         <span>${fmtRupiah(totalBelanja)}</span>
       </div>
+    </div>
+
+    <div class="card">
+      <p style="font-weight:600;margin:0 0 4px">Riwayat nota (detail)</p>
+      <p class="muted" style="margin:0 0 12px">Per baris barang: tanggal, supplier, harga, dan tanggal diganti.</p>
+      <div class="row" style="gap:8px;margin-bottom:10px">
+        <select id="filterKategoriNota" style="flex:1">
+          <option value="">Semua kategori</option>
+          ${state.kategoriList.map(k => `<option value="${k.id}" ${state.laporanNotaKategori===k.id?'selected':''}>${k.nama_kategori}</option>`).join("")}
+        </select>
+        <select id="filterSupplierNota" style="flex:1">
+          <option value="">Semua supplier</option>
+          ${[...new Set(state.laporanRows.map(r => r.supplier))].map(s => `<option value="${s}" ${state.laporanNotaSupplier===s?'selected':''}>${s}</option>`).join("")}
+        </select>
+      </div>
+      <button style="width:100%;margin-bottom:12px;font-size:13px" id="btnExportCsv">⬇ Export ke Excel (CSV)</button>
+      <div style="overflow-x:auto">
+        ${filterLaporanNota().length===0 ? `<p class="muted">Tidak ada data untuk filter ini.</p>` : filterLaporanNota().map(r => `
+          <div style="border-bottom:0.5px solid var(--border);padding:8px 0">
+            <div class="between">
+              <span style="font-size:13px;font-weight:600">${r.nama_barang}</span>
+              <span style="font-size:13px;font-weight:600">${fmtRupiah(r.subtotal)}</span>
+            </div>
+            <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:2px">
+              <span class="muted" style="font-size:11px">${r.tanggal}</span>
+              <span class="muted" style="font-size:11px">· ${r.supplier}</span>
+              <span class="muted" style="font-size:11px">· ${r.kategori}</span>
+              <span class="muted" style="font-size:11px">· ${r.jumlah} ${r.satuan} × ${fmtRupiah(r.harga_satuan)}</span>
+            </div>
+            <div class="muted" style="font-size:11px;margin-top:2px">
+              Diganti: ${r.tanggal_diganti || "Belum diganti"}
+            </div>
+          </div>
+        `).join("")}
+      </div>
     </div>`;
 
   renderShell(html);
@@ -1706,6 +1781,9 @@ function renderLaporan(){
   };
   document.querySelectorAll("[data-tabqty]").forEach(el => el.onclick = () => { state.laporanTabQty = el.dataset.tabqty; render(); });
   document.querySelectorAll("[data-tabbelanja]").forEach(el => el.onclick = () => { state.laporanTabBelanja = el.dataset.tabbelanja; render(); });
+  document.getElementById("filterKategoriNota").onchange = (e) => { state.laporanNotaKategori = e.target.value; render(); };
+  document.getElementById("filterSupplierNota").onchange = (e) => { state.laporanNotaSupplier = e.target.value; render(); };
+  document.getElementById("btnExportCsv").onclick = exportLaporanNotaCsv;
 }
 
 /* ================= MAIN RENDER ================= */
