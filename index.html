@@ -568,6 +568,14 @@ async function rejectNota(notaId){
   await catatLog("reject_nota", "kas", { nota_id: notaId });
   await loadKasData(); render();
 }
+async function batalkanApprovalNota(notaId){
+  if(!confirm("Batalkan approval nota ini? Statusnya kembali ke 'diajukan' (menunggu approval lagi), belum kembali ke belum_diajukan.")) return;
+  await sb.from("tiket_nota").update({
+    status_kas: "diajukan", approved_by: null, approved_at: null
+  }).eq("id", notaId);
+  await catatLog("batalkan_approval_nota", "kas", { nota_id: notaId });
+  await loadKasData(); render();
+}
 function toggleTransferPilih(id){
   const idx = state.transferPilih.indexOf(id);
   if(idx > -1) state.transferPilih.splice(idx,1); else state.transferPilih.push(id);
@@ -590,21 +598,27 @@ async function submitPengajuanTransfer(){
   alert("Pengajuan transfer " + no_pengajuan_transfer + " dibuat.");
   render();
 }
-async function keputusanTransfer(pengajuanId, keputusan){
+async function keputusanTransfer(pengajuanId, keputusan, nominalAktual){
   const pengajuan = state.pengajuanTransferMenunggu.find(p => p.id === pengajuanId);
   if(keputusan === "sudah_transfer"){
+    const jumlahRiil = (nominalAktual !== undefined && nominalAktual !== null && nominalAktual !== "")
+      ? Number(nominalAktual) : Number(pengajuan.total_nominal);
+    if(!jumlahRiil || jumlahRiil <= 0){ alert("Nominal transfer harus lebih dari 0."); return; }
     const { data: ledgerTerakhir } = await sb.from("kas_ledger").select("saldo_berjalan").order("created_at",{ascending:false}).limit(1);
     const saldoLama = (ledgerTerakhir && ledgerTerakhir.length) ? Number(ledgerTerakhir[0].saldo_berjalan) : 0;
     const { error: eLedger } = await sb.from("kas_ledger").insert({
-      jenis: "masuk", jumlah: pengajuan.total_nominal, saldo_berjalan: saldoLama + Number(pengajuan.total_nominal),
-      ref_tabel: "pengajuan_transfer", ref_id: pengajuanId, keterangan: "Transfer dari Owner " + pengajuan.no_pengajuan_transfer
+      jenis: "masuk", jumlah: jumlahRiil, saldo_berjalan: saldoLama + jumlahRiil,
+      ref_tabel: "pengajuan_transfer", ref_id: pengajuanId,
+      keterangan: "Transfer " + pengajuan.no_pengajuan_transfer +
+        (jumlahRiil !== Number(pengajuan.total_nominal) ? " (nominal aktual disesuaikan dari " + fmtRupiah(pengajuan.total_nominal) + ")" : "")
     });
     if(eLedger){ alert("GAGAL mencatat kas masuk: " + eLedger.message); return; }
     await sb.from("pengajuan_transfer").update({
-      status: "sudah_transfer", keputusan_oleh: state.profile.id, keputusan_at: new Date().toISOString()
+      status: "sudah_transfer", keputusan_oleh: state.profile.id, keputusan_at: new Date().toISOString(),
+      jumlah_transfer_aktual: jumlahRiil
     }).eq("id", pengajuanId);
     await sb.from("tiket_nota").update({ status_kas: "selesai" }).eq("pengajuan_transfer_id", pengajuanId);
-    await catatLog("transfer_selesai", "kas", { pengajuan_id: pengajuanId, total: pengajuan.total_nominal });
+    await catatLog("transfer_selesai", "kas", { pengajuan_id: pengajuanId, total_dihitung: pengajuan.total_nominal, jumlah_aktual: jumlahRiil });
   } else {
     await sb.from("pengajuan_transfer").update({
       status: "tunda", keputusan_oleh: state.profile.id, keputusan_at: new Date().toISOString()
@@ -613,6 +627,22 @@ async function keputusanTransfer(pengajuanId, keputusan){
   }
   await loadKasData();
   render();
+}
+function openKonfirmasiTransferModal(pengajuanId){
+  const pengajuan = state.pengajuanTransferMenunggu.find(p => p.id === pengajuanId);
+  if(!pengajuan) return;
+  openModal(`
+    <p style="font-weight:600;margin:0 0 8px">Konfirmasi transfer ${pengajuan.no_pengajuan_transfer}</p>
+    <p class="muted" style="margin:0 0 12px">Total nota yang di-ACC: ${fmtRupiah(pengajuan.total_nominal)}. Sesuaikan nominal di bawah kalau uang riil yang diberikan beda (dibulatkan/menyesuaikan dana tersedia).</p>
+    <div class="field"><label class="field-label">Nominal aktual ditransfer</label><input id="nominalAktualTransfer" value="${pengajuan.total_nominal}"></div>
+    <button class="primary" style="width:100%" id="btnKonfirmasiTransfer">Konfirmasi sudah transfer</button>
+  `, (overlay) => {
+    overlay.querySelector("#btnKonfirmasiTransfer").onclick = async () => {
+      const val = overlay.querySelector("#nominalAktualTransfer").value;
+      overlay.remove();
+      await keputusanTransfer(pengajuanId, "sudah_transfer", val);
+    };
+  });
 }
 function copyWAFormat(pengajuan){
   let text = "Pengajuan Transfer Kas - " + pengajuan.no_pengajuan_transfer + "\n";
@@ -662,6 +692,10 @@ async function voidNota(notaId){
   openVoidModal("Void nota", async (reason) => {
     const { data: nota } = await sb.from("tiket_nota").select("*, nota_item(*)").eq("id", notaId).single();
     if(!nota || nota.is_void) return;
+    if(nota.status_kas !== "belum_diajukan"){
+      alert("Nota ini statusnya '" + nota.status_kas.replace(/_/g," ") + "'. Void hanya bisa dilakukan saat status belum_diajukan — tolak/batalkan approval/void transfer dulu sesuai urutannya.");
+      return;
+    }
 
     const { data: origLedger } = await sb.from("kas_ledger").select("*")
       .eq("ref_tabel","tiket_nota").eq("ref_id",notaId).eq("jenis","keluar").eq("is_void",false).maybeSingle();
@@ -1278,7 +1312,11 @@ function renderNota(){
               ${!ni.permintaan_item_id ? '<span class="badge badge-luar">di luar permintaan</span>' : ''}
             </div>
           `).join("")}
-          ${(state.profile.role==='owner' && !n.is_void) ? `<button style="padding:3px 8px;font-size:11px;margin-top:6px" data-voidnota="${n.id}">Void nota</button>` : ""}
+          ${state.profile.role==='owner' && !n.is_void ? (
+            n.status_kas === 'belum_diajukan'
+              ? `<button style="padding:3px 8px;font-size:11px;margin-top:6px" data-voidnota="${n.id}">Void nota</button>`
+              : `<p class="muted" style="font-size:11px;margin:6px 0 0">Void hanya bisa saat status belum_diajukan — tolak/batalkan approval/void transfer dulu sesuai urutannya.</p>`
+          ) : ""}
         </div>
       `).join("")}
     </div>`;
@@ -1431,17 +1469,17 @@ function renderKas(){
     </div>`;
   }
 
-  if(["owner","accounting"].includes(role)){
+  if(role === "owner"){
     html += `
     <div class="card">
       <p style="font-weight:600;margin:0 0 4px">Setoran / penyesuaian kas manual</p>
-      <p class="muted" style="margin:0 0 12px">Dipakai untuk mengatur saldo awal, kas khusus dari Accounting, atau koreksi manual di luar alur normal.</p>
+      <p class="muted" style="margin:0 0 12px">Dipakai untuk mengatur saldo awal atau koreksi manual di luar alur normal. Khusus Owner.</p>
       <div class="row" style="gap:8px;margin-bottom:10px">
         <button class="tab ${(window.__kasJenis||'masuk')==='masuk'?'active':''}" data-kasjenis="masuk">Masuk (tambah)</button>
         <button class="tab ${window.__kasJenis==='keluar'?'active':''}" data-kasjenis="keluar">Keluar (kurangi)</button>
       </div>
       <div class="field"><input id="manualJumlah" placeholder="Nominal"></div>
-      <div class="field"><input id="manualKeterangan" placeholder="Keterangan (misal: kas khusus dari Accounting)"></div>
+      <div class="field"><input id="manualKeterangan" placeholder="Keterangan (misal: saldo awal kas)"></div>
       <button class="primary" style="width:100%" id="btnManualKas">Simpan</button>
     </div>`;
   }
@@ -1491,11 +1529,14 @@ function renderKas(){
       <p style="font-weight:600;margin:0 0 12px">Buat pengajuan transfer</p>
       ${state.notaDisetujui.length===0 ? '<p class="muted">Belum ada nota siap ditransfer.</p>' :
         state.notaDisetujui.map(n => `
-        <label class="row" style="padding:8px 0;border-bottom:0.5px solid var(--border)">
-          <input type="checkbox" style="width:auto" data-transfer="${n.id}" ${state.transferPilih.includes(n.id)?'checked':''}>
-          <span style="flex:1;font-size:13px">${n.no_nota} · ${n.supplier?.nama_supplier}</span>
-          <span style="font-size:13px;font-weight:600">${fmtRupiah(n.total_nominal)}</span>
-        </label>`).join("")}
+        <div style="padding:8px 0;border-bottom:0.5px solid var(--border)">
+          <label class="row">
+            <input type="checkbox" style="width:auto" data-transfer="${n.id}" ${state.transferPilih.includes(n.id)?'checked':''}>
+            <span style="flex:1;font-size:13px">${n.no_nota} · ${n.supplier?.nama_supplier}</span>
+            <span style="font-size:13px;font-weight:600">${fmtRupiah(n.total_nominal)}</span>
+          </label>
+          ${role==='owner' ? `<button style="font-size:11px;padding:3px 8px;margin-top:4px" data-batalapproval="${n.id}">Batalkan approval (untuk void)</button>` : ""}
+        </div>`).join("")}
       ${state.notaDisetujui.length ? `<button class="primary" style="width:100%;margin-top:12px" id="btnSubmitTransfer">Buat pengajuan transfer (${state.transferPilih.length} nota)</button>` : ""}
     </div>`;
   }
@@ -1535,6 +1576,11 @@ function renderKas(){
             <span class="muted" style="font-size:12px">${p._notaList.length} nota</span>
             <span style="font-size:13px;font-weight:600">${fmtRupiah(p.total_nominal)}</span>
           </div>
+          ${p.jumlah_transfer_aktual != null && Number(p.jumlah_transfer_aktual) !== Number(p.total_nominal) ? `
+          <div class="between" style="margin-top:2px">
+            <span class="muted" style="font-size:12px">Nominal aktual ditransfer</span>
+            <span class="muted" style="font-size:12px">${fmtRupiah(p.jumlah_transfer_aktual)}</span>
+          </div>` : ""}
           ${role === "owner" ? `<button class="danger" style="width:100%;margin-top:8px;font-size:12px" data-voidtransfer="${p.id}">Void pengajuan ini</button>` : ""}
         </div>`).join("")}
     </div>`;
@@ -1548,6 +1594,7 @@ function renderKas(){
 
   document.querySelectorAll("[data-approve]").forEach(el => el.onclick = () => approveNota(el.dataset.approve));
   document.querySelectorAll("[data-reject]").forEach(el => el.onclick = () => rejectNota(el.dataset.reject));
+  document.querySelectorAll("[data-batalapproval]").forEach(el => el.onclick = () => batalkanApprovalNota(el.dataset.batalapproval));
 
   document.querySelectorAll("[data-transfer]").forEach(el => el.onchange = () => toggleTransferPilih(el.dataset.transfer));
   const btnTransfer = document.getElementById("btnSubmitTransfer");
@@ -1555,7 +1602,7 @@ function renderKas(){
 
   document.querySelectorAll("[data-wa]").forEach(el => el.onclick = () => copyWAFormat(state.pengajuanTransferMenunggu.find(p => p.id === el.dataset.wa)));
   document.querySelectorAll("[data-print]").forEach(el => el.onclick = () => printPengajuan(state.pengajuanTransferMenunggu.find(p => p.id === el.dataset.print)));
-  document.querySelectorAll("[data-sudahtransfer]").forEach(el => el.onclick = () => keputusanTransfer(el.dataset.sudahtransfer, "sudah_transfer"));
+  document.querySelectorAll("[data-sudahtransfer]").forEach(el => el.onclick = () => openKonfirmasiTransferModal(el.dataset.sudahtransfer));
   document.querySelectorAll("[data-tunda]").forEach(el => el.onclick = () => keputusanTransfer(el.dataset.tunda, "tunda"));
   document.querySelectorAll("[data-voidtransfer]").forEach(el => el.onclick = () => voidPengajuanTransfer(el.dataset.voidtransfer));
   document.querySelectorAll("[data-kasjenis]").forEach(el => el.onclick = () => { window.__kasJenis = el.dataset.kasjenis; render(); });
