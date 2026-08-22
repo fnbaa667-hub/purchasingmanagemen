@@ -307,23 +307,24 @@ async function loadKasData(){
   state.notaDisetujui = disetujui || [];
 
   const { data: transferMenunggu } = await sb.from("pengajuan_transfer").select("*").eq("status","menunggu").order("created_at");
-  for(const pt of (transferMenunggu || [])){
-    const { data: notanya } = await sb.from("tiket_nota")
-      .select("no_nota, tanggal_belanja, total_nominal, supplier(nama_supplier)")
-      .eq("pengajuan_transfer_id", pt.id);
-    pt._notaList = notanya || [];
-  }
-  state.pengajuanTransferMenunggu = transferMenunggu || [];
-
   const { data: transferSelesai } = await sb.from("pengajuan_transfer").select("*")
     .in("status", ["sudah_transfer","tunda"]).eq("is_void", false)
     .order("created_at", { ascending:false }).limit(20);
-  for(const pt of (transferSelesai || [])){
-    const { data: notanya } = await sb.from("tiket_nota")
-      .select("no_nota, tanggal_belanja, total_nominal, supplier(nama_supplier)")
-      .eq("pengajuan_transfer_id", pt.id);
-    pt._notaList = notanya || [];
+
+  const semuaIdPengajuan = [...(transferMenunggu||[]), ...(transferSelesai||[])].map(p => p.id);
+  let notaPerPengajuan = {};
+  if(semuaIdPengajuan.length){
+    const { data: semuaNota } = await sb.from("tiket_nota")
+      .select("no_nota, tanggal_belanja, total_nominal, supplier(nama_supplier), pengajuan_transfer_id")
+      .in("pengajuan_transfer_id", semuaIdPengajuan);
+    (semuaNota || []).forEach(n => {
+      if(!notaPerPengajuan[n.pengajuan_transfer_id]) notaPerPengajuan[n.pengajuan_transfer_id] = [];
+      notaPerPengajuan[n.pengajuan_transfer_id].push(n);
+    });
   }
+  (transferMenunggu||[]).forEach(pt => { pt._notaList = notaPerPengajuan[pt.id] || []; });
+  (transferSelesai||[]).forEach(pt => { pt._notaList = notaPerPengajuan[pt.id] || []; });
+  state.pengajuanTransferMenunggu = transferMenunggu || [];
   state.pengajuanTransferSelesai = transferSelesai || [];
 }
 
@@ -541,6 +542,12 @@ async function submitNota(){
 }
 
 async function terimaBarangItem(notaItemId){
+  // Optimistic UI: hilangkan dari daftar lokal dulu supaya klik terasa instan,
+  // tidak perlu menunggu semua query database selesai dulu.
+  state.terimaList = state.terimaList.filter(ni => ni.id !== notaItemId);
+  state.terimaLuarList = state.terimaLuarList.filter(ni => ni.id !== notaItemId);
+  render();
+
   const { data: notaItem } = await sb.from("nota_item").select("permintaan_item_id").eq("id", notaItemId).single();
   await sb.from("nota_item").update({
     status_penerimaan: "diterima", diterima_oleh: state.profile.id, diterima_at: new Date().toISOString()
@@ -559,9 +566,9 @@ async function terimaBarangItem(notaItemId){
   }
 
   await catatLog("terima_barang", "permintaan", { nota_item_id: notaItemId });
+  // sinkron ulang dari server di belakang layar (diam-diam), tidak memblokir tampilan
   await loadTerimaList();
   await loadTerimaLuarList();
-  await loadKasData();
   render();
 }
 
