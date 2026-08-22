@@ -182,6 +182,7 @@ async function login(username, password){
   await loadProfile();
   await loadMasterData();
   state.view = "permintaan";
+  await expireOldPermintaan();
   await loadTiketList();
   await loadPermintaanTerbuka();
   await loadNotaList();
@@ -251,6 +252,15 @@ async function loadNotaList(){
     .order("created_at", { ascending: false }).limit(30);
   if(error) console.error("loadNotaList gagal:", error.message);
   state.notaList = data || [];
+}
+async function expireOldPermintaan(){
+  const today = new Date().toISOString().slice(0,10);
+  await sb.from("permintaan_item")
+    .update({ status: "tidak_disediakan" })
+    .eq("tipe", "biasa")
+    .in("status", ["pending","sebagian"])
+    .lt("tanggal_dibutuhkan", today)
+    .eq("is_void", false);
 }
 async function loadPermintaanTerbuka(){
   const { data } = await sb.from("permintaan_item")
@@ -343,7 +353,8 @@ async function loadTiketList(){
 function tambahKeKeranjang(item){
   state.keranjang.push({
     jenis_barang_id: item.id, nama_barang: item.nama_barang, satuan: item.satuan,
-    harga_referensi: item.harga_referensi, jumlah: 1, tipe: "biasa", boleh_diganti: false
+    harga_referensi: item.harga_referensi, jumlah: 1, tipe: "biasa", boleh_diganti: false,
+    tanggal_dibutuhkan: new Date().toISOString().slice(0,10)
   });
   render();
 }
@@ -357,6 +368,7 @@ function ubahQtyKeranjangLangsung(idx, val){
   state.keranjang[idx].jumlah = (n > 0) ? n : state.keranjang[idx].jumlah;
   render();
 }
+function ubahTanggalKeranjang(idx, val){ state.keranjang[idx].tanggal_dibutuhkan = val; }
 function ubahTipeKeranjang(idx, tipe){ state.keranjang[idx].tipe = tipe; render(); }
 function ubahGantiKeranjang(idx, val){ state.keranjang[idx].boleh_diganti = val; render(); }
 
@@ -368,7 +380,8 @@ async function submitPermintaan(){
   if(error){ alert("Gagal membuat tiket: " + error.message); return; }
   const rows = state.keranjang.map(it => ({
     tiket_permintaan_id: tiket.id, jenis_barang_id: it.jenis_barang_id,
-    jumlah_diminta: it.jumlah, tipe: it.tipe, boleh_diganti: it.boleh_diganti
+    jumlah_diminta: it.jumlah, tipe: it.tipe, boleh_diganti: it.boleh_diganti,
+    tanggal_dibutuhkan: it.tanggal_dibutuhkan
   }));
   const { error: err2 } = await sb.from("permintaan_item").insert(rows);
   if(err2){ alert("Gagal menyimpan barang: " + err2.message); return; }
@@ -1204,6 +1217,10 @@ function renderPermintaan(){
               <input type="checkbox" style="width:auto" data-ganti="${idx}" ${it.boleh_diganti?'checked':''}> Boleh diganti
             </label>
           </div>
+          <div class="field" style="margin-top:8px;margin-bottom:0">
+            <label class="field-label">Dibutuhkan tanggal</label>
+            <input type="date" data-tanggal="${idx}" value="${it.tanggal_dibutuhkan}">
+          </div>
         </div>
       `).join("")}
       <button class="primary" style="width:100%;margin-top:12px" id="btnSubmitPermintaan">Ajukan permintaan (${state.keranjang.length} barang)</button>
@@ -1219,10 +1236,11 @@ function renderPermintaan(){
           </div>
           ${(t.permintaan_item||[]).map(pi => `
             <div style="margin-top:8px;padding-top:8px;border-top:0.5px solid var(--border)">
-              <p style="font-size:13px;margin:0 0 6px">${pi.jenis_barang?.nama_barang} · ${pi.jumlah_diminta} ${pi.jenis_barang?.satuan}</p>
+              <p style="font-size:13px;margin:0 0 2px">${pi.jenis_barang?.nama_barang} · ${pi.jumlah_diminta} ${pi.jenis_barang?.satuan}</p>
+              ${pi.tanggal_dibutuhkan ? `<p class="muted" style="font-size:11px;margin:0 0 6px">Dibutuhkan: ${pi.tanggal_dibutuhkan}</p>` : ""}
               <div class="row" style="gap:6px;flex-wrap:wrap;justify-content:flex-start">
                 <span class="badge badge-${pi.tipe}">${pi.tipe}</span>
-                <span class="badge badge-${pi.is_void ? 'luar' : (pi.status==='selesai' ? 'selesai' : 'pending')}">${pi.is_void ? 'void' : pi.status}</span>
+                <span class="badge badge-${pi.is_void ? 'luar' : (pi.status==='selesai' ? 'selesai' : (pi.status==='tidak_disediakan' ? 'luar' : 'pending'))}">${pi.is_void ? 'void' : pi.status.replace(/_/g,' ')}</span>
                 ${(state.profile.role==='owner' && !pi.is_void && pi.status!=='selesai') ? `<button style="padding:2px 8px;font-size:11px" data-voidpi="${pi.id}">Void</button>` : ""}
               </div>
             </div>
@@ -1250,6 +1268,7 @@ function renderPermintaan(){
   document.querySelectorAll("[data-qtyinput]").forEach(el => el.onchange = () => ubahQtyKeranjangLangsung(Number(el.dataset.qtyinput), el.value));
   document.querySelectorAll("[data-tipe]").forEach(el => el.onclick = () => ubahTipeKeranjang(Number(el.dataset.tipe), el.dataset.val));
   document.querySelectorAll("[data-ganti]").forEach(el => el.onchange = () => ubahGantiKeranjang(Number(el.dataset.ganti), el.checked));
+  document.querySelectorAll("[data-tanggal]").forEach(el => el.onchange = () => ubahTanggalKeranjang(Number(el.dataset.tanggal), el.value));
   const btnSubmit = document.getElementById("btnSubmitPermintaan");
   if(btnSubmit) btnSubmit.onclick = submitPermintaan;
   document.querySelectorAll("[data-terima]").forEach(el => el.onclick = () => terimaBarangItem(el.dataset.terima));
@@ -1819,6 +1838,7 @@ if("serviceWorker" in navigator){
     state.session = data.session;
     await loadProfile();
     await loadMasterData();
+    await expireOldPermintaan();
     await loadTiketList();
     await loadPermintaanTerbuka();
     await loadNotaList();
