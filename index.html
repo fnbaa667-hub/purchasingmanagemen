@@ -2,7 +2,7 @@
 <html lang="id">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, interactive-widget=resizes-content">
 <title>Kas & Purchasing - Arcelio Group</title>
 <link rel="icon" type="image/jpeg" href="icon.jpg">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -15,11 +15,12 @@
     --success:#1d8a5f; --success-bg:#e6f6ef;
     --warning:#a5680f; --warning-bg:#fdf2df;
     --radius:10px;
+    --kb-offset:0px;
   }
   *{box-sizing:border-box}
   body{margin:0;font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);font-size:15px}
   #app{max-width:480px;margin:0 auto;min-height:100vh;background:var(--bg);padding-bottom:70px}
-  input,select,textarea{font-family:inherit;font-size:15px;padding:10px 12px;border:0.5px solid var(--border-strong);border-radius:var(--radius);width:100%;background:#fff;color:var(--text)}
+  input,select,textarea{font-family:inherit;font-size:16px;padding:10px 12px;border:0.5px solid var(--border-strong);border-radius:var(--radius);width:100%;background:#fff;color:var(--text)}
   button{font-family:inherit;font-size:14px;padding:10px 14px;border-radius:var(--radius);border:0.5px solid var(--border-strong);background:#fff;color:var(--text);cursor:pointer}
   button.primary{background:var(--accent);color:#fff;border:none;font-weight:600}
   button.danger{background:var(--danger);color:#fff;border:none}
@@ -33,12 +34,13 @@
   .badge-biasa{background:var(--accent-bg);color:var(--accent)}
   .badge-pending{background:var(--warning-bg);color:var(--warning)}
   .badge-selesai{background:var(--success-bg);color:var(--success)}
+  .badge-luar{background:var(--warning-bg);color:var(--warning)}
   .topbar{position:sticky;top:0;background:var(--card);border-bottom:0.5px solid var(--border);padding:12px 16px;display:flex;justify-content:space-between;align-items:center;z-index:5}
-  .navbar{position:fixed;bottom:0;left:0;right:0;max-width:480px;margin:0 auto;background:var(--card);border-top:0.5px solid var(--border);display:flex;z-index:5}
+  .navbar{position:fixed;bottom:var(--kb-offset);left:0;right:0;max-width:480px;margin:0 auto;background:var(--card);border-top:0.5px solid var(--border);display:flex;z-index:5;transition:bottom 0.12s ease}
   .navbtn{flex:1;text-align:center;padding:10px 4px;font-size:11px;color:var(--text-sec);border:none;background:none;border-radius:0}
   .navbtn.active{color:var(--accent);font-weight:600}
-  .overlay{position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:20;padding:16px}
-  .modal{background:#fff;border-radius:14px;padding:20px;width:100%;max-width:400px;max-height:85vh;overflow:auto}
+  .overlay{position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:flex-start;justify-content:center;z-index:20;padding:16px;padding-bottom:calc(16px + var(--kb-offset));overflow:auto}
+  .modal{background:#fff;border-radius:14px;padding:20px;width:100%;max-width:400px;max-height:85vh;overflow:auto;margin:auto}
   .stepper{display:flex;align-items:center;gap:10px}
   .stepper button{width:40px;height:40px;padding:0;font-size:18px}
   .stepper span{flex:1;text-align:center;font-size:18px;font-weight:600}
@@ -94,6 +96,25 @@ let state = {
 };
 
 const app = document.getElementById("app");
+
+/* ================= KEYBOARD MOBILE: JAGA TAMPILAN TETAP NYAMAN ================= */
+function syncKeyboardOffset(){
+  if(!window.visualViewport) return;
+  const vv = window.visualViewport;
+  const offset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+  document.documentElement.style.setProperty("--kb-offset", offset + "px");
+}
+if(window.visualViewport){
+  window.visualViewport.addEventListener("resize", syncKeyboardOffset);
+  window.visualViewport.addEventListener("scroll", syncKeyboardOffset);
+}
+document.addEventListener("focusin", (e) => {
+  if(e.target.matches("input, textarea, select")){
+    setTimeout(() => {
+      e.target.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 250);
+  }
+});
 
 /* ================= UTIL ================= */
 function fmtRupiah(n){
@@ -285,6 +306,11 @@ function ubahQtyKeranjang(idx, delta){
   state.keranjang[idx].jumlah = Math.max(1, state.keranjang[idx].jumlah + delta);
   render();
 }
+function ubahQtyKeranjangLangsung(idx, val){
+  const n = Number(val);
+  state.keranjang[idx].jumlah = (n > 0) ? n : state.keranjang[idx].jumlah;
+  render();
+}
 function ubahTipeKeranjang(idx, tipe){ state.keranjang[idx].tipe = tipe; render(); }
 function ubahGantiKeranjang(idx, val){ state.keranjang[idx].boleh_diganti = val; render(); }
 
@@ -329,9 +355,27 @@ function tambahKeNotaKeranjang(pi){
   });
   render();
 }
+function tambahBarangLuarPermintaan(item){
+  state.notaKeranjang.push({
+    permintaan_item_id: null,
+    jenis_barang_id_asli: item.id,
+    jenis_barang_id: item.id,
+    nama_barang: item.nama_barang,
+    satuan: item.satuan,
+    jumlah: 1,
+    harga: item.harga_referensi || 0,
+    is_substitusi: false
+  });
+  render();
+}
 function hapusDariNotaKeranjang(idx){ state.notaKeranjang.splice(idx,1); render(); }
 function ubahQtyNotaKeranjang(idx, delta){
   state.notaKeranjang[idx].jumlah = Math.max(1, state.notaKeranjang[idx].jumlah + delta);
+  render();
+}
+function ubahQtyNotaLangsung(idx, val){
+  const n = Number(val);
+  state.notaKeranjang[idx].jumlah = (n > 0) ? n : state.notaKeranjang[idx].jumlah;
   render();
 }
 function ubahHargaNotaKeranjang(idx, val){
@@ -393,12 +437,19 @@ async function submitNota(){
   if(eLedger){ alert("Nota tersimpan tapi GAGAL mencatat kas keluar: " + eLedger.message + " — hubungi admin, saldo kas tidak akurat sampai ini diperbaiki."); }
 
   for(const it of state.notaKeranjang){
+    const luarPermintaan = !it.permintaan_item_id;
     const { error: eItem } = await sb.from("nota_item").insert({
       tiket_nota_id: nota.id, permintaan_item_id: it.permintaan_item_id,
       jenis_barang_id: it.jenis_barang_id, is_substitusi: it.is_substitusi,
-      jumlah_dibeli: it.jumlah, harga_satuan: it.harga
+      jumlah_dibeli: it.jumlah, harga_satuan: it.harga,
+      // barang di luar permintaan tidak ada requester yang bisa konfirmasi,
+      // jadi langsung ditandai diterima oleh purchasing sendiri
+      status_penerimaan: luarPermintaan ? "diterima" : "menunggu",
+      diterima_oleh: luarPermintaan ? state.profile.id : null,
+      diterima_at: luarPermintaan ? new Date().toISOString() : null
     });
     if(eItem){ alert("Gagal simpan baris nota: " + eItem.message); continue; }
+    if(luarPermintaan) continue;
 
     const { data: pi } = await sb.from("permintaan_item").select("*").eq("id", it.permintaan_item_id).single();
     if(pi){
@@ -572,6 +623,7 @@ async function voidNota(notaId){
     }
 
     for(const ni of (nota.nota_item || [])){
+      if(!ni.permintaan_item_id) continue;
       const { data: pi } = await sb.from("permintaan_item").select("*").eq("id", ni.permintaan_item_id).single();
       if(pi){
         const terpenuhiBaru = Math.max(0, Number(pi.jumlah_terpenuhi) - Number(ni.jumlah_dibeli));
@@ -861,7 +913,8 @@ function renderPermintaan(){
           <div class="row" style="margin-top:8px">
             <div class="stepper" style="flex:1">
               <button data-qty="${idx}" data-delta="-1">−</button>
-              <span>${it.jumlah} ${it.satuan}</span>
+              <input data-qtyinput="${idx}" value="${it.jumlah}" style="width:64px;text-align:center;flex:none">
+              <span class="muted" style="font-size:12px">${it.satuan}</span>
               <button data-qty="${idx}" data-delta="1">+</button>
             </div>
           </div>
@@ -913,6 +966,7 @@ function renderPermintaan(){
   });
   document.querySelectorAll("[data-hapus]").forEach(el => el.onclick = () => hapusDariKeranjang(Number(el.dataset.hapus)));
   document.querySelectorAll("[data-qty]").forEach(el => el.onclick = () => ubahQtyKeranjang(Number(el.dataset.qty), Number(el.dataset.delta)));
+  document.querySelectorAll("[data-qtyinput]").forEach(el => el.onchange = () => ubahQtyKeranjangLangsung(Number(el.dataset.qtyinput), el.value));
   document.querySelectorAll("[data-tipe]").forEach(el => el.onclick = () => ubahTipeKeranjang(Number(el.dataset.tipe), el.dataset.val));
   document.querySelectorAll("[data-ganti]").forEach(el => el.onchange = () => ubahGantiKeranjang(Number(el.dataset.ganti), el.checked));
   const btnSubmit = document.getElementById("btnSubmitPermintaan");
@@ -926,6 +980,7 @@ function renderNota(){
   const isPurchasing = ["purchasing","owner"].includes(state.profile.role);
   const supKw = state.notaSupplierSearch.trim().toLowerCase();
   const supResults = (supKw && !state.notaSupplierId) ? state.supplierList.filter(s => s.nama_supplier.toLowerCase().includes(supKw)).slice(0,6) : [];
+  const luarResults = searchJenisBarang(window.__notaLuarSearch || "");
 
   const formHtml = isPurchasing ? `
     <div class="card">
@@ -949,19 +1004,27 @@ function renderNota(){
         `).join("")}
       </div>
 
+      <p style="font-weight:600;margin:16px 0 8px;font-size:14px">Tambah barang di luar permintaan</p>
+      <p class="muted" style="margin:0 0 8px;font-size:12px">Untuk barang yang tidak ada permintaannya (misal beli tambahan/pengganti yang tidak sesuai jumlah aslinya).</p>
+      <input id="luarSearch" placeholder="Cari barang..." value="${window.__notaLuarSearch || ''}">
+      ${luarResults.length ? `<div class="sugglist" id="luarBox">
+        ${luarResults.map(r => `<div class="suggitem" data-luarid="${r.id}">${r.nama_barang} <span class="muted">· ${r.satuan}</span></div>`).join("")}
+      </div>` : ""}
+
       ${state.notaKeranjang.length ? `
       <p style="font-weight:600;margin:16px 0 8px;font-size:14px">Barang di nota ini</p>
       ${state.notaKeranjang.map((it, idx) => `
         <div style="border-bottom:0.5px solid var(--border);padding:10px 0">
           <div class="between">
-            <span style="font-size:14px">${it.nama_barang} ${it.is_substitusi ? '<span class="badge badge-pending">pengganti</span>' : ''}</span>
+            <span style="font-size:14px">${it.nama_barang} ${it.is_substitusi ? '<span class="badge badge-pending">pengganti</span>' : ''} ${!it.permintaan_item_id ? '<span class="badge badge-luar">di luar permintaan</span>' : ''}</span>
             <button style="padding:4px 8px;font-size:12px" data-hapusnota="${idx}">Hapus</button>
           </div>
           <button style="font-size:12px;margin-top:6px;padding:4px 8px" data-ganti="${idx}">Ganti barang</button>
           <div class="row" style="margin-top:8px;gap:8px">
             <div class="stepper" style="flex:1">
               <button data-qtynota="${idx}" data-delta="-1">−</button>
-              <span>${it.jumlah} ${it.satuan}</span>
+              <input data-qtynotainput="${idx}" value="${it.jumlah}" style="width:64px;text-align:center;flex:none">
+              <span class="muted" style="font-size:12px">${it.satuan}</span>
               <button data-qtynota="${idx}" data-delta="1">+</button>
             </div>
             <input style="flex:1" data-harga="${idx}" value="${it.harga}" placeholder="Harga satuan">
@@ -985,6 +1048,13 @@ function renderNota(){
             <span class="muted" style="font-size:12px">${n.tanggal_belanja}</span>
             <span style="font-size:13px;font-weight:600">${fmtRupiah(n.total_nominal)}</span>
           </div>
+          ${(n.nota_item||[]).map(ni => `
+            <div style="margin-top:4px;font-size:12px" class="muted">
+              ${ni.jenis_barang?.nama_barang} · ${ni.jumlah_dibeli} ${ni.jenis_barang?.satuan}
+              ${ni.is_substitusi ? '<span class="badge badge-pending">pengganti</span>' : ''}
+              ${!ni.permintaan_item_id ? '<span class="badge badge-luar">di luar permintaan</span>' : ''}
+            </div>
+          `).join("")}
           ${(state.profile.role==='owner' && !n.is_void) ? `<button style="padding:3px 8px;font-size:11px;margin-top:6px" data-voidnota="${n.id}">Void nota</button>` : ""}
         </div>
       `).join("")}
@@ -1005,8 +1075,21 @@ function renderNota(){
       el.onclick = () => tambahKeNotaKeranjang(state.permintaanTerbuka.find(p => p.id === el.dataset.pilih));
     });
     document.querySelectorAll("[data-hilang]").forEach(el => el.onclick = () => tandaiHilang(el.dataset.hilang));
+    const luarInput = document.getElementById("luarSearch");
+    if(luarInput){
+      luarInput.oninput = () => { window.__notaLuarSearch = luarInput.value; render(); };
+      if(window.__notaLuarSearch){ luarInput.focus(); luarInput.setSelectionRange(luarInput.value.length, luarInput.value.length); }
+    }
+    document.querySelectorAll("[data-luarid]").forEach(el => {
+      el.onclick = () => {
+        const item = state.jenisList.find(j => j.id === el.dataset.luarid);
+        window.__notaLuarSearch = "";
+        tambahBarangLuarPermintaan(item);
+      };
+    });
     document.querySelectorAll("[data-hapusnota]").forEach(el => el.onclick = () => hapusDariNotaKeranjang(Number(el.dataset.hapusnota)));
     document.querySelectorAll("[data-qtynota]").forEach(el => el.onclick = () => ubahQtyNotaKeranjang(Number(el.dataset.qtynota), Number(el.dataset.delta)));
+    document.querySelectorAll("[data-qtynotainput]").forEach(el => el.onchange = () => ubahQtyNotaLangsung(Number(el.dataset.qtynotainput), el.value));
     document.querySelectorAll("[data-harga]").forEach(el => el.onchange = () => ubahHargaNotaKeranjang(Number(el.dataset.harga), el.value));
     document.querySelectorAll("[data-ganti]").forEach(el => el.onclick = () => openGantiBarangModal(Number(el.dataset.ganti)));
     const btnSubmitNota = document.getElementById("btnSubmitNota");
