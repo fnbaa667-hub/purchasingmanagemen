@@ -286,12 +286,14 @@ async function loadPermintaanTerbuka(){
   state.permintaanTerbuka.forEach(pi => { pi._lastSupplier = supplierMap[pi.jenis_barang_id] || null; });
 }
 async function loadTerimaList(){
+  if(state.profile.role === "purchasing"){ state.terimaList = []; return; }
   const { data } = await sb.from("nota_item")
     .select("*, jenis_barang(nama_barang, satuan), tiket_nota(no_nota, supplier(nama_supplier)), permintaan_item(jenis_barang_id, tiket_permintaan(requester_id))")
     .eq("status_penerimaan", "menunggu");
   state.terimaList = (data || []).filter(ni => ni.permintaan_item?.tiket_permintaan?.requester_id === state.profile.id);
 }
 async function loadTerimaLuarList(){
+  if(state.profile.role === "purchasing"){ state.terimaLuarList = []; return; }
   const { data } = await sb.from("nota_item")
     .select("*, jenis_barang(nama_barang, satuan), tiket_nota(no_nota, supplier(nama_supplier))")
     .eq("status_penerimaan", "menunggu")
@@ -399,10 +401,12 @@ async function submitPermintaan(){
   }));
   const { error: err2 } = await sb.from("permintaan_item").insert(rows);
   if(err2){ alert("Gagal menyimpan barang: " + err2.message); return; }
+  const jumlahItem = rows.length;
   state.keranjang = [];
-  await loadTiketList();
-  await catatLog("buat_permintaan", "permintaan", { no_tiket, jumlah_item: rows.length });
+  render();
   alert("Permintaan " + no_tiket + " berhasil dibuat.");
+  await loadTiketList();
+  await catatLog("buat_permintaan", "permintaan", { no_tiket, jumlah_item: jumlahItem });
   render();
 }
 
@@ -520,35 +524,48 @@ async function submitNota(){
 
   const { data: ledgerTerakhir } = await sb.from("kas_ledger").select("saldo_berjalan").order("created_at",{ascending:false}).limit(1);
   const saldoLama = (ledgerTerakhir && ledgerTerakhir.length) ? Number(ledgerTerakhir[0].saldo_berjalan) : 0;
-  const { error: eLedger } = await sb.from("kas_ledger").insert({
-    jenis:"keluar", jumlah: totalNominal, saldo_berjalan: saldoLama - totalNominal,
-    ref_tabel: "tiket_nota", ref_id: nota.id, keterangan: "Belanja nota " + no_nota
-  });
-  if(eLedger){ alert("Nota tersimpan tapi GAGAL mencatat kas keluar: " + eLedger.message + " — hubungi admin, saldo kas tidak akurat sampai ini diperbaiki."); }
 
-  for(const it of state.notaKeranjang){
-    const luarPermintaan = !it.permintaan_item_id;
-    const { error: eItem } = await sb.from("nota_item").insert({
-      tiket_nota_id: nota.id, permintaan_item_id: it.permintaan_item_id,
-      jenis_barang_id: it.jenis_barang_id, is_substitusi: it.is_substitusi,
-      jumlah_dibeli: it.jumlah, harga_satuan: it.harga,
-      status_penerimaan: "menunggu"
+  const barisNotaItem = state.notaKeranjang.map(it => ({
+    tiket_nota_id: nota.id, permintaan_item_id: it.permintaan_item_id,
+    jenis_barang_id: it.jenis_barang_id, is_substitusi: it.is_substitusi,
+    jumlah_dibeli: it.jumlah, harga_satuan: it.harga, status_penerimaan: "menunggu"
+  }));
+
+  // Kas keluar & simpan semua baris nota sekaligus, dijalankan paralel (bukan satu-satu)
+  const [ledgerRes, notaItemRes] = await Promise.all([
+    sb.from("kas_ledger").insert({
+      jenis:"keluar", jumlah: totalNominal, saldo_berjalan: saldoLama - totalNominal,
+      ref_tabel: "tiket_nota", ref_id: nota.id, keterangan: "Belanja nota " + no_nota
+    }),
+    sb.from("nota_item").insert(barisNotaItem)
+  ]);
+  if(ledgerRes.error){ alert("Nota tersimpan tapi GAGAL mencatat kas keluar: " + ledgerRes.error.message + " — hubungi admin, saldo kas tidak akurat sampai ini diperbaiki."); }
+  if(notaItemRes.error){ alert("Sebagian/semua baris nota gagal disimpan: " + notaItemRes.error.message); }
+
+  // Update jumlah_terpenuhi/status permintaan_item: ambil semua sekaligus,
+  // gabungkan penambahan per id (kalau ada lebih dari 1 baris keranjang untuk
+  // permintaan yang sama), baru update paralel — bukan berurutan satu-satu.
+  const idPermintaanUnik = [...new Set(state.notaKeranjang.filter(it => it.permintaan_item_id).map(it => it.permintaan_item_id))];
+  if(idPermintaanUnik.length){
+    const { data: piList } = await sb.from("permintaan_item").select("*").in("id", idPermintaanUnik);
+    const piMap = {}; (piList || []).forEach(pi => { piMap[pi.id] = pi; });
+    const tambahan = {};
+    state.notaKeranjang.forEach(it => {
+      if(!it.permintaan_item_id) return;
+      tambahan[it.permintaan_item_id] = (tambahan[it.permintaan_item_id] || 0) + Number(it.jumlah);
     });
-    if(eItem){ alert("Gagal simpan baris nota: " + eItem.message); continue; }
-    if(luarPermintaan) continue;
-
-    const { data: pi } = await sb.from("permintaan_item").select("*").eq("id", it.permintaan_item_id).single();
-    if(pi){
-      const terpenuhiBaru = Number(pi.jumlah_terpenuhi) + Number(it.jumlah);
-      // qty terpenuhi BUKAN berarti selesai — selesai hanya setelah barang
-      // dikonfirmasi diterima (lihat terimaBarangItem). Ini berlaku sama
-      // untuk semua role, termasuk Owner.
+    await Promise.all(Object.keys(tambahan).map(piId => {
+      const pi = piMap[piId];
+      if(!pi) return Promise.resolve();
+      const terpenuhiBaru = Number(pi.jumlah_terpenuhi) + tambahan[piId];
       const statusBaru = terpenuhiBaru >= pi.jumlah_diminta ? "menunggu_terima" : "sebagian";
-      await sb.from("permintaan_item").update({ jumlah_terpenuhi: terpenuhiBaru, status: statusBaru }).eq("id", pi.id);
-    }
+      return sb.from("permintaan_item").update({ jumlah_terpenuhi: terpenuhiBaru, status: statusBaru }).eq("id", piId);
+    }));
   }
+
   state.notaKeranjang = []; state.notaSupplierId = null; state.notaSupplierSearch = "";
-  await loadPermintaanTerbuka(); await loadNotaList(); await loadTiketList(); await loadKasData();
+  render();
+  await Promise.all([loadPermintaanTerbuka(), loadNotaList(), loadTiketList(), loadKasData()]);
   await catatLog("buat_nota", "nota", { no_nota, total_nominal: totalNominal });
   alert("Nota " + no_nota + " berhasil disimpan.");
   render();
