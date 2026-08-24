@@ -288,9 +288,13 @@ async function loadPermintaanTerbuka(){
 async function loadTerimaList(){
   if(state.profile.role === "purchasing"){ state.terimaList = []; return; }
   const { data } = await sb.from("nota_item")
-    .select("*, jenis_barang(nama_barang, satuan), tiket_nota(no_nota, supplier(nama_supplier)), permintaan_item(jenis_barang_id, tiket_permintaan(requester_id))")
-    .eq("status_penerimaan", "menunggu");
-  state.terimaList = (data || []).filter(ni => ni.permintaan_item?.tiket_permintaan?.requester_id === state.profile.id);
+    .select("*, jenis_barang(nama_barang, satuan), tiket_nota(no_nota, supplier(nama_supplier)), permintaan_item(jenis_barang_id, tiket_permintaan(requester_id, profiles(nama)))")
+    .eq("status_penerimaan", "menunggu")
+    .not("permintaan_item_id", "is", null);
+  const lihatSemua = ["owner","manager"].includes(state.profile.role);
+  state.terimaList = (data || []).filter(ni =>
+    lihatSemua || ni.permintaan_item?.tiket_permintaan?.requester_id === state.profile.id
+  );
 }
 async function loadTerimaLuarList(){
   if(state.profile.role === "purchasing"){ state.terimaLuarList = []; return; }
@@ -599,6 +603,43 @@ async function terimaBarangItem(notaItemId){
   // sinkron ulang dari server di belakang layar (diam-diam), tidak memblokir tampilan
   await loadTerimaList();
   await loadTerimaLuarList();
+  render();
+}
+
+async function sinkronkanStatusPermintaan(){
+  if(!confirm("Sinkronkan ulang status semua permintaan berdasarkan nota yang benar-benar ada? Ini memperbaiki data yang nyangkut (misal sudah dibelikan tapi statusnya belum berubah).")) return;
+
+  const { data: piList } = await sb.from("permintaan_item").select("id, jumlah_diminta, jumlah_terpenuhi, status")
+    .in("status", ["pending","sebagian","menunggu_terima"]).eq("is_void", false);
+  if(!piList || piList.length === 0){ alert("Tidak ada data yang perlu disinkronkan."); return; }
+  const piIds = piList.map(pi => pi.id);
+
+  const { data: notaItemList } = await sb.from("nota_item")
+    .select("permintaan_item_id, jumlah_dibeli, tiket_nota(is_void)")
+    .in("permintaan_item_id", piIds);
+
+  const totalDibeli = {};
+  (notaItemList || []).forEach(ni => {
+    if(ni.tiket_nota?.is_void) return; // nota yang sudah di-void tidak dihitung
+    totalDibeli[ni.permintaan_item_id] = (totalDibeli[ni.permintaan_item_id] || 0) + Number(ni.jumlah_dibeli);
+  });
+
+  const perluUpdate = [];
+  piList.forEach(pi => {
+    const totalBaru = totalDibeli[pi.id] || 0;
+    if(totalBaru === Number(pi.jumlah_terpenuhi)) return; // sudah sesuai, lewati
+    const statusBaru = totalBaru <= 0 ? "pending" : (totalBaru >= pi.jumlah_diminta ? "menunggu_terima" : "sebagian");
+    perluUpdate.push({ id: pi.id, jumlah_terpenuhi: totalBaru, status: statusBaru });
+  });
+
+  if(perluUpdate.length === 0){ alert("Semua data sudah sinkron, tidak ada yang perlu diperbaiki."); return; }
+
+  await Promise.all(perluUpdate.map(u =>
+    sb.from("permintaan_item").update({ jumlah_terpenuhi: u.jumlah_terpenuhi, status: u.status }).eq("id", u.id)
+  ));
+  await catatLog("sinkron_status_permintaan", "permintaan", { jumlah_diperbaiki: perluUpdate.length });
+  await loadPermintaanTerbuka(); await loadTiketList();
+  alert(perluUpdate.length + " permintaan berhasil disinkronkan.");
   render();
 }
 
@@ -1214,14 +1255,17 @@ function renderShell(content){
 function renderPermintaan(){
   const searchVal = window.__searchVal || "";
   const results = searchJenisBarang(searchVal);
+  const lihatSemuaTerima = ["owner","manager"].includes(state.profile.role);
   const terimaHtml = state.terimaList.length ? `
     <div class="card">
-      <p style="font-weight:600;margin:0 0 12px">Perlu saya terima</p>
+      <p style="font-weight:600;margin:0 0 4px">${lihatSemuaTerima ? "Perlu diterima (semua requester)" : "Perlu saya terima"}</p>
+      ${lihatSemuaTerima ? `<p class="muted" style="margin:0 0 12px">Konfirmasi ini idealnya dilakukan requester aslinya, tapi Anda bisa bantu konfirmasi di sini.</p>` : ""}
       <div class="itemcard">
         ${state.terimaList.map(ni => `
         <div class="itemcard-row">
           <span class="item-name">${ni.jenis_barang?.nama_barang} · ${ni.jumlah_dibeli} ${ni.jenis_barang?.satuan}
             <span class="muted" style="font-size:11px"> · ${ni.tiket_nota?.no_nota}</span>
+            ${lihatSemuaTerima ? `<span class="muted" style="font-size:11px"> · ${ni.permintaan_item?.tiket_permintaan?.profiles?.nama || '-'}</span>` : ""}
             ${ni.is_substitusi ? '<span class="badge badge-pending" style="margin-left:4px">pengganti</span>' : ''}
           </span>
           <button style="padding:6px 10px;font-size:12px;flex-shrink:0" data-terima="${ni.id}">Terima</button>
@@ -1586,6 +1630,12 @@ function renderMaster(){
       </div>`;
   }
   const html = `
+    ${isOwner ? `
+    <div class="card">
+      <p style="font-weight:600;margin:0 0 4px">Perbaikan data</p>
+      <p class="muted" style="margin:0 0 12px">Kalau ada permintaan yang sudah dibelikan (ada notanya) tapi statusnya masih nyangkut di pending/sebagian, tekan ini untuk menyamakan ulang berdasarkan nota yang benar-benar ada.</p>
+      <button style="width:100%" id="btnSinkronPermintaan">Sinkronkan status permintaan</button>
+    </div>` : ""}
     <div class="tabs">
       <button class="tab ${tab==='kategori'?'active':''}" data-mtab="kategori">Kategori</button>
       <button class="tab ${tab==='jenis'?'active':''}" data-mtab="jenis">Jenis barang</button>
@@ -1596,6 +1646,9 @@ function renderMaster(){
       ${body}
     </div>`;
   renderShell(html);
+
+  const btnSinkron = document.getElementById("btnSinkronPermintaan");
+  if(btnSinkron) btnSinkron.onclick = sinkronkanStatusPermintaan;
 
   document.querySelectorAll("[data-mtab]").forEach(el => el.onclick = () => { window.__masterTab = el.dataset.mtab; render(); });
   const btnK = document.getElementById("btnAddKategori");
