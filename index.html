@@ -189,16 +189,20 @@ async function login(username, password){
   if(error){ state.error = "Gagal masuk (" + email + "): " + error.message; render(); return; }
   state.session = data.session;
   await loadProfile();
-  await loadMasterData();
   state.view = "permintaan";
-  await expireOldPermintaan();
-  await loadTiketList();
-  await loadPermintaanTerbuka();
-  await loadNotaList();
-  await loadTerimaList();
-  await loadTerimaLuarList();
-  await loadKasData();
-  if(state.profile.role === "owner") await loadLogAktivitas();
+  try{
+    await loadMasterData();
+    await expireOldPermintaan();
+    await loadTiketList();
+    await loadPermintaanTerbuka();
+    await loadNotaList();
+    await loadTerimaList();
+    await loadTerimaLuarList();
+    await loadKasData();
+    if(state.profile.role === "owner") await loadLogAktivitas();
+  } catch(e){
+    console.error("Gagal memuat sebagian data saat login:", e);
+  }
   render();
 }
 async function loadProfile(){
@@ -1167,7 +1171,23 @@ function renderShell(content){
   app.querySelectorAll(".navbtn").forEach(b => {
     b.onclick = async () => {
       state.view = b.dataset.view;
-      if(b.dataset.view === "laporan") await loadLaporan();
+      try{
+        if(b.dataset.view === "laporan") await loadLaporan();
+        else if(b.dataset.view === "permintaan"){
+          await expireOldPermintaan();
+          await loadTiketList();
+          await loadTerimaList();
+          await loadTerimaLuarList();
+        }
+        else if(b.dataset.view === "nota"){
+          await loadPermintaanTerbuka();
+          await loadNotaList();
+        }
+        else if(b.dataset.view === "kas") await loadKasData();
+        else if(b.dataset.view === "log") await loadLogAktivitas();
+      } catch(e){
+        console.error("Gagal memuat data tab " + b.dataset.view + ":", e);
+      }
       render();
     };
   });
