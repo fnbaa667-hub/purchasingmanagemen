@@ -467,6 +467,7 @@ function ubahQtyNotaLangsung(idx, val){
 }
 function ubahHargaNotaKeranjang(idx, val){
   state.notaKeranjang[idx].harga = Number(val) || 0;
+  render();
 }
 
 function openGantiBarangModal(idx){
@@ -955,6 +956,108 @@ function openEditJenisModal(j){
     };
   });
 }
+async function openEditNotaItemModal(notaItemId){
+  const { data: ni } = await sb.from("nota_item")
+    .select("*, jenis_barang(nama_barang, satuan), tiket_nota(id, no_nota, status_kas, is_void, total_nominal)")
+    .eq("id", notaItemId).single();
+  if(!ni){ alert("Data tidak ditemukan."); return; }
+  if(ni.tiket_nota?.is_void || ni.tiket_nota?.status_kas !== "belum_diajukan"){
+    alert("Nota ini sudah diajukan/diproses, tidak bisa diedit lagi.");
+    return;
+  }
+
+  openModal(`
+    <p style="font-weight:600;margin:0 0 4px">Edit baris nota</p>
+    <p class="muted" style="margin:0 0 12px">${ni.jenis_barang?.nama_barang} — nota ${ni.tiket_nota?.no_nota}</p>
+    <div class="row" style="gap:8px">
+      <div class="field" style="flex:1"><label class="field-label">Jumlah (${ni.jenis_barang?.satuan})</label>
+        <input id="editNiQty" value="${ni.jumlah_dibeli}"></div>
+      <div class="field" style="flex:1"><label class="field-label">Harga satuan</label>
+        <input id="editNiHarga" value="${ni.harga_satuan}"></div>
+    </div>
+    <div class="between" style="padding:10px;background:var(--bg);border-radius:var(--radius);margin-bottom:12px">
+      <span class="muted" style="font-size:12px">Subtotal</span>
+      <span id="editNiSubtotal" style="font-weight:700;font-size:16px">${fmtRupiah(ni.subtotal)}</span>
+    </div>
+    <button class="primary" style="width:100%;margin-bottom:8px" id="btnSimpanEditNi">Simpan perubahan</button>
+    <button class="danger" style="width:100%" id="btnHapusNi">Hapus baris ini</button>
+  `, (overlay) => {
+    const inQty = overlay.querySelector("#editNiQty");
+    const inHarga = overlay.querySelector("#editNiHarga");
+    const lblSub = overlay.querySelector("#editNiSubtotal");
+    const hitung = () => {
+      const sub = (Number(inQty.value)||0) * (Number(inHarga.value)||0);
+      lblSub.textContent = fmtRupiah(sub);
+    };
+    inQty.oninput = hitung; inHarga.oninput = hitung;
+
+    overlay.querySelector("#btnSimpanEditNi").onclick = async () => {
+      const qtyBaru = Number(inQty.value);
+      const hargaBaru = Number(inHarga.value);
+      if(!qtyBaru || qtyBaru <= 0){ alert("Jumlah harus lebih dari 0."); return; }
+      if(hargaBaru < 0){ alert("Harga tidak boleh negatif."); return; }
+      overlay.remove();
+      await simpanEditNotaItem(ni, { jumlah_dibeli: qtyBaru, harga_satuan: hargaBaru });
+    };
+    overlay.querySelector("#btnHapusNi").onclick = async () => {
+      if(!confirm("Hapus baris ini dari nota? Total nota dan kas akan disesuaikan otomatis.")) return;
+      overlay.remove();
+      await simpanEditNotaItem(ni, null);
+    };
+  });
+}
+
+async function simpanEditNotaItem(ni, perubahan){
+  const notaId = ni.tiket_nota.id;
+
+  if(perubahan){
+    const { error } = await sb.from("nota_item").update(perubahan).eq("id", ni.id);
+    if(error){ alert("Gagal menyimpan: " + error.message); return; }
+  } else {
+    const { error } = await sb.from("nota_item").delete().eq("id", ni.id);
+    if(error){ alert("Gagal menghapus: " + error.message); return; }
+  }
+
+  // Hitung ulang total nota dari baris yang tersisa
+  const { data: sisaItem } = await sb.from("nota_item").select("subtotal").eq("tiket_nota_id", notaId);
+  const totalBaru = (sisaItem || []).reduce((s, r) => s + Number(r.subtotal || 0), 0);
+  const totalLama = Number(ni.tiket_nota.total_nominal || 0);
+  await sb.from("tiket_nota").update({ total_nominal: totalBaru }).eq("id", notaId);
+
+  // Sesuaikan kas lewat entri koreksi sebesar selisihnya (entri lama tidak diubah,
+  // supaya jejak audit tetap utuh)
+  const selisih = totalBaru - totalLama;
+  if(selisih !== 0){
+    const { data: ledgerTerakhir } = await sb.from("kas_ledger").select("saldo_berjalan").order("created_at",{ascending:false}).limit(1);
+    const saldoLama = (ledgerTerakhir && ledgerTerakhir.length) ? Number(ledgerTerakhir[0].saldo_berjalan) : 0;
+    const jenis = selisih > 0 ? "keluar" : "masuk";
+    const jumlah = Math.abs(selisih);
+    await sb.from("kas_ledger").insert({
+      jenis, jumlah, saldo_berjalan: jenis === "keluar" ? saldoLama - jumlah : saldoLama + jumlah,
+      ref_tabel: "tiket_nota", ref_id: notaId,
+      keterangan: "Koreksi edit nota " + ni.tiket_nota.no_nota
+    });
+  }
+
+  // Samakan ulang status permintaan terkait berdasarkan nota yang benar-benar ada
+  if(ni.permintaan_item_id){
+    const { data: pi } = await sb.from("permintaan_item").select("*").eq("id", ni.permintaan_item_id).single();
+    if(pi){
+      const { data: semuaNi } = await sb.from("nota_item")
+        .select("jumlah_dibeli, tiket_nota(is_void)").eq("permintaan_item_id", ni.permintaan_item_id);
+      const totalDibeli = (semuaNi || []).reduce((s, r) => r.tiket_nota?.is_void ? s : s + Number(r.jumlah_dibeli), 0);
+      const statusBaru = totalDibeli <= 0 ? "pending" : (totalDibeli >= pi.jumlah_diminta ? "menunggu_terima" : "sebagian");
+      await sb.from("permintaan_item").update({ jumlah_terpenuhi: totalDibeli, status: statusBaru }).eq("id", pi.id);
+    }
+  }
+
+  await catatLog(perubahan ? "edit_nota_item" : "hapus_nota_item", "nota",
+    { nota_item_id: ni.id, no_nota: ni.tiket_nota.no_nota, total_lama: totalLama, total_baru: totalBaru });
+  await Promise.all([loadNotaList(), loadKasData(), loadPermintaanTerbuka(), loadTiketList()]);
+  alert("Perubahan tersimpan. Total nota sekarang " + fmtRupiah(totalBaru) + ".");
+  render();
+}
+
 function openEditSupplierModal(s){
   openModal(`
     <p style="font-weight:600;margin:0 0 12px">Edit supplier</p>
@@ -1497,8 +1600,16 @@ function renderNota(){
             </div>
             <input style="flex:1" data-harga="${idx}" value="${it.harga}" placeholder="Harga satuan">
           </div>
+          <div class="between" style="margin-top:6px;padding-top:6px;border-top:0.5px dashed var(--border)">
+            <span class="muted" style="font-size:12px">${it.jumlah} ${it.satuan} × ${fmtRupiah(it.harga)}</span>
+            <span style="font-size:14px;font-weight:700;color:var(--accent)">${fmtRupiah(it.jumlah * it.harga)}</span>
+          </div>
         </div>
       `).join("")}
+      <div class="between" style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border-strong)">
+        <span style="font-weight:700">Total nota</span>
+        <span style="font-size:18px;font-weight:700">${fmtRupiah(state.notaKeranjang.reduce((s,it) => s + it.jumlah * it.harga, 0))}</span>
+      </div>
       <button class="primary" style="width:100%;margin-top:12px" id="btnSubmitNota">Simpan nota (${state.notaKeranjang.length} barang)</button>
       ` : ""}
     </div>` : "";
@@ -1517,10 +1628,15 @@ function renderNota(){
             <span style="font-size:13px;font-weight:600;flex-shrink:0">${fmtRupiah(n.total_nominal)}</span>
           </div>
           ${(n.nota_item||[]).map(ni => `
-            <div class="itemcard-row">
-              <span class="item-name">${ni.jenis_barang?.nama_barang} · ${ni.jumlah_dibeli} ${ni.jenis_barang?.satuan}</span>
-              ${ni.is_substitusi ? '<span class="badge badge-pending" style="flex-shrink:0">pengganti</span>' : ''}
-              ${!ni.permintaan_item_id ? '<span class="badge badge-luar" style="flex-shrink:0">luar</span>' : ''}
+            <div class="itemcard-row" style="flex-wrap:wrap">
+              <span class="item-name" style="flex-basis:100%">${ni.jenis_barang?.nama_barang}
+                ${ni.is_substitusi ? '<span class="badge badge-pending">pengganti</span>' : ''}
+                ${!ni.permintaan_item_id ? '<span class="badge badge-luar">luar</span>' : ''}
+              </span>
+              <span class="muted" style="font-size:12px">${ni.jumlah_dibeli} ${ni.jenis_barang?.satuan} × ${fmtRupiah(ni.harga_satuan)}</span>
+              <span style="font-size:13px;font-weight:700;margin-left:auto;flex-shrink:0">${fmtRupiah(ni.subtotal)}</span>
+              ${(!n.is_void && n.status_kas === 'belum_diajukan' && ['purchasing','owner'].includes(state.profile.role))
+                ? `<button style="padding:2px 8px;font-size:11px;margin-left:8px;flex-shrink:0" data-editni="${ni.id}">Edit</button>` : ""}
             </div>
           `).join("")}
           ${state.profile.role==='owner' && !n.is_void ? (
@@ -1577,6 +1693,7 @@ function renderNota(){
     if(btnSubmitNota) btnSubmitNota.onclick = submitNota;
   }
   document.querySelectorAll("[data-voidnota]").forEach(el => el.onclick = () => voidNota(el.dataset.voidnota));
+  document.querySelectorAll("[data-editni]").forEach(el => el.onclick = () => openEditNotaItemModal(el.dataset.editni));
 }
 
 /* ================= RENDER: MASTER DATA ================= */
