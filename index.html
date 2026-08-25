@@ -7,7 +7,6 @@
 <link rel="icon" type="image/jpeg" href="icon.jpg">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2/dist/tabler-icons.min.css">
 <meta name="theme-color" content="#1d6fa5">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
@@ -191,15 +190,22 @@ async function login(username, password){
   await loadProfile();
   state.view = "permintaan";
   try{
+    // Muat data secara paralel, bukan antre satu-satu. Yang dibutuhkan tab
+    // pertama (Permintaan) didahulukan supaya layar bisa tampil lebih cepat.
     await loadMasterData();
     await expireOldPermintaan();
-    await loadTiketList();
-    await loadPermintaanTerbuka();
-    await loadNotaList();
-    await loadTerimaList();
-    await loadTerimaLuarList();
-    await loadKasData();
-    if(state.profile.role === "owner") await loadLogAktivitas();
+    await Promise.all([
+      loadTiketList(),
+      loadTerimaList(),
+      loadTerimaLuarList()
+    ]);
+    render(); // tampilkan layar Permintaan secepatnya
+    await Promise.all([
+      loadPermintaanTerbuka(),
+      loadNotaList(),
+      loadKasData(),
+      state.profile.role === "owner" ? loadLogAktivitas() : Promise.resolve()
+    ]);
   } catch(e){
     console.error("Gagal memuat sebagian data saat login:", e);
   }
@@ -1233,13 +1239,10 @@ function renderShell(content){
         if(b.dataset.view === "laporan") await loadLaporan();
         else if(b.dataset.view === "permintaan"){
           await expireOldPermintaan();
-          await loadTiketList();
-          await loadTerimaList();
-          await loadTerimaLuarList();
+          await Promise.all([loadTiketList(), loadTerimaList(), loadTerimaLuarList()]);
         }
         else if(b.dataset.view === "nota"){
-          await loadPermintaanTerbuka();
-          await loadNotaList();
+          await Promise.all([loadPermintaanTerbuka(), loadNotaList()]);
         }
         else if(b.dataset.view === "kas") await loadKasData();
         else if(b.dataset.view === "log") await loadLogAktivitas();
@@ -1358,7 +1361,7 @@ function renderPermintaan(){
               <span class="tipe-badge ${pi.tipe}">${pi.tipe==='wajib'?'W':'B'}</span>
               <span class="item-name">${pi.jenis_barang?.nama_barang} · ${pi.jumlah_diminta} ${pi.jenis_barang?.satuan}${pi.tanggal_dibutuhkan ? ' · '+pi.tanggal_dibutuhkan : ''}</span>
               ${isSelesai
-                ? `<i class="ti ti-check status-icon" style="color:var(--success)" aria-label="selesai"></i>`
+                ? `<span class="status-icon" style="color:var(--success);font-weight:700" title="selesai" aria-label="selesai">✓</span>`
                 : `<span class="badge badge-${badgeKelas}" style="flex-shrink:0">${label}</span>`}
               ${(state.profile.role==='owner' && !pi.is_void && pi.status!=='selesai') ? `<button style="padding:2px 6px;font-size:11px;flex-shrink:0" data-voidpi="${pi.id}">Void</button>` : ""}
             </div>`;
@@ -1992,15 +1995,20 @@ if("serviceWorker" in navigator){
   if(data.session){
     state.session = data.session;
     await loadProfile();
-    await loadMasterData();
-    await expireOldPermintaan();
-    await loadTiketList();
-    await loadPermintaanTerbuka();
-    await loadNotaList();
-    await loadTerimaList();
-    await loadTerimaLuarList();
-    await loadKasData();
-    if(state.profile.role === "owner") await loadLogAktivitas();
+    try{
+      await loadMasterData();
+      await expireOldPermintaan();
+      await Promise.all([loadTiketList(), loadTerimaList(), loadTerimaLuarList()]);
+      render();
+      await Promise.all([
+        loadPermintaanTerbuka(),
+        loadNotaList(),
+        loadKasData(),
+        state.profile.role === "owner" ? loadLogAktivitas() : Promise.resolve()
+      ]);
+    } catch(e){
+      console.error("Gagal memuat sebagian data:", e);
+    }
   }
   render();
 })();
